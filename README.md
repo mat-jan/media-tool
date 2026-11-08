@@ -8,7 +8,7 @@ dysków, pendrive'ów, kart SD, czytników kart. Działa na **macOS, Linux i Win
 dopóki wyraźnie nie wybierzesz innej operacji – a nawet wtedy program nigdy nie zapisuje na nośnik.
 
 ## Spis treści
-- [Szybki start – bez instalowania pakietów](#szybki-start--bez-instalowania-pakietów)
+- [Instalacja – bez instalowania pakietów](#instalacja--bez-instalowania-pakietów)
 - [Bezpieczeństwo](#bezpieczeństwo)
 - [Polecenia](#polecenia)
 - [Menu interaktywne](#menu-interaktywne)
@@ -18,46 +18,73 @@ dopóki wyraźnie nie wybierzesz innej operacji – a nawet wtedy program nigdy 
 - [Stan testów i znane ograniczenia](#stan-testów-i-znane-ograniczenia)
 - [Rozwój](#rozwój)
 
-## Szybki start – bez instalowania pakietów
+## Instalacja – bez instalowania pakietów
 
-Pobierz archiwum ze strony **Releases**, rozpakuj i **kliknij dwukrotnie** skrypt dla swojego systemu.
-Skrypt zapyta, czy pracować w trybie podstawowym (tylko informacje), czy pełnym (obrazy, skan, testy – poprosi
-o hasło/zgodę administratora), i uruchomi menu.
+> **English:** `media-tool` identifies, diagnoses, reports on and images storage media (SD cards, USB drives, SSD/HDD)
+> on macOS, Linux and Windows. It is **read-only by design**, needs no dependencies, and is signed by nobody – so use
+> the installers below, which avoid the macOS/Windows "unverified developer" warnings.
+> macOS / Linux: `curl -fsSL https://raw.githubusercontent.com/mat-jan/media-tool/main/install.sh | sh`
+> Windows (PowerShell): `irm https://raw.githubusercontent.com/mat-jan/media-tool/main/install.ps1 | iex`
+
+### Najłatwiej: jedna komenda (bez ostrzeżeń systemu)
+
+**macOS i Linux** – wklej w Terminalu:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mat-jan/media-tool/main/install.sh | sh
+```
+
+**Windows** – wklej w PowerShellu:
+
+```powershell
+irm https://raw.githubusercontent.com/mat-jan/media-tool/main/install.ps1 | iex
+```
+
+Instalator pobiera najnowsze wydanie (także beta), sprawdza sumę SHA-256 (jeśli wydanie ją zawiera), rozpakowuje do
+katalogu użytkownika (nie wymaga administratora) i nie nadpisuje katalogów, których sam nie utworzył.
+Potem uruchamiasz `media-tool` (menu) – albo `sudo media-tool` do obrazów, skanu i testów (macOS/Linux);
+na Windows: skrót „media-tool" na pulpicie. Odinstalowanie: ta sama komenda z `-s -- --uninstall`
+(Windows: `$env:MEDIA_TOOL_UNINSTALL=1` przed komendą). Pliki pobrane przez `curl` i PowerShell nie dostają znacznika
+„z internetu", więc macOS Gatekeeper i Windows SmartScreen nie wyświetlają ostrzeżenia.
+
+### Albo: pobierz archiwum i kliknij dwukrotnie
+
+Pobierz paczkę ze strony **Releases**, rozpakuj i kliknij skrypt dla swojego systemu. Skrypt zapyta, czy pracować
+w trybie podstawowym (tylko informacje), czy pełnym (obrazy, skan, testy – poprosi o hasło/zgodę administratora).
 
 | System | Plik do kliknięcia | Co jest potrzebne |
 |---|---|---|
 | Windows | `Start-Windows.bat` | nic, jeśli pobrałeś paczkę `windows-x64` (zawiera `media-tool.exe`); w paczce `universal`: Python 3.9+ |
-| macOS | `Start-macOS.command` | nic, jeśli pobrałeś paczkę `macos-arm64` / `macos-x64`; w paczce `universal`: Python 3.9+ (jest w „Narzędziach wiersza poleceń" Apple) |
-| Linux | `Start-Linux.sh` (menedżer plików: „Uruchom w terminalu") | nic dodatkowego w paczce `linux-x64`; w `universal`: Python 3.9+; `lsblk` z pakietu `util-linux` (jest wszędzie) |
+| macOS | `Start-macOS.command` | nic, jeśli pobrałeś paczkę `macos-arm64` / `macos-x64`; w paczce `universal`: Python 3.9+ |
+| Linux | `Start-Linux.sh` (menedżer plików: „Uruchom w terminalu") | nic dodatkowego w paczce `linux-x64`; `lsblk` z `util-linux` (jest wszędzie) |
 
-Paczki: `media-tool-<system>.zip` = jeden samodzielny program (bez Pythona) + skrypt startowy;
-`media-tool-universal.zip` = jeden plik `media-tool.pyz` (62 KiB) + skrypty dla wszystkich systemów.
-Skrypt startowy sam wybiera, co uruchomić: gotowy program → `media-tool.pyz` → katalog źródłowy `media_tool/`
-(więc działa też po pobraniu samego kodu jako ZIP z GitHuba). Raporty i obrazy trafiają domyślnie do
-`~/media-tool` (`%USERPROFILE%\media-tool`; zmiana: zmienna `MEDIA_TOOL_OUTPUT_DIR`). Pliki utworzone przez `sudo`
-są przekazywane zwykłemu użytkownikowi.
+Paczki: `media-tool-<system>.zip` = samodzielny program (bez Pythona) + skrypt startowy;
+`media-tool-universal.zip` = jeden plik `media-tool.pyz` (62 KiB) + skrypty dla wszystkich systemów (wymaga Pythona 3.9+).
+Skrypt startowy sam wybiera, co uruchomić: gotowy program → `media-tool.pyz` → katalog źródłowy `media_tool/`.
+Raporty i obrazy trafiają domyślnie do `~/media-tool` (`%USERPROFILE%\media-tool`; zmiana: `MEDIA_TOOL_OUTPUT_DIR`).
 
-**Pierwsze uruchomienie – ostrzeżenia systemu** (program nie jest podpisany certyfikatem):
+**Ostrzeżenia przy pobraniu z przeglądarki** (program nie jest podpisany certyfikatem – to płatna usługa Apple/Microsoft):
+* **macOS „Apple could not verify…":** kliknij **Done** (nie „Move to Trash"). Potem albo
+  *Ustawienia systemowe → Prywatność i ochrona →* przewiń w dół → **„Otwórz mimo to"**, albo w Terminalu:
+  `xattr -dr com.apple.quarantine <rozpakowany-katalog>` i kliknij plik ponownie.
+  (Starszy sposób „prawy klik → Otwórz" nie działa od macOS 15.) Jeśli bit wykonywalny zginął: `bash Start-macOS.command`.
 * **Windows SmartScreen:** „Więcej informacji" → „Uruchom mimo to".
-* **macOS Gatekeeper:** prawy klik na pliku → „Otwórz" → „Otwórz" (lub `xattr -dr com.apple.quarantine <katalog>`).
-  Jeśli bit wykonywalny zginął przy rozpakowaniu: `bash Start-macOS.command`.
 
-Możesz też uruchamiać bez skryptów:
+### Dla użytkowników Pythona
 
 ```bash
-python3 media-tool.pyz                # menu (potrzebny tylko Python 3.9+)
-python3 -m media_tool list            # z katalogu repozytorium, bez instalacji
-./media-tool list                     # samodzielna binarka
-pip install .                         # opcjonalnie: polecenie `media-tool`
+pipx install git+https://github.com/mat-jan/media-tool.git   # polecenie `media-tool`
+python3 media-tool.pyz                                       # z paczki universal, bez instalacji
+python3 -m media_tool list                                   # z kodu źródłowego, bez instalacji
 ```
 
 Odczyt **surowych urządzeń** (obrazowanie, skan, test integralności, test prędkości) wymaga uprawnień
-administratora (`sudo …` / terminal „jako administrator") – skrypty startowe robią to za Ciebie po wybraniu trybu
-pełnego. Informacje o urządzeniach (`list`, `inspect`, `serial`, …) działają bez nich.
-Opcjonalnie: `smartctl` (pakiet *smartmontools*) – pełne dane SMART.
+administratora (`sudo …` / terminal „jako administrator"). Informacje o urządzeniach (`list`, `inspect`, `serial`, …)
+działają bez nich. Opcjonalnie: `smartctl` (pakiet *smartmontools*) – pełne dane SMART.
 
 Paczki buduje GitHub Actions (`.github/workflows/build.yml`): testy na Ubuntu/macOS/Windows i Pythonie 3.9 oraz 3.13,
-potem PyInstaller na każdym systemie; przy tagu `v*` powstaje Release. Lokalnie: `python3 tools/build_pyz.py`.
+potem PyInstaller na każdym systemie; przy tagu `v*` powstaje Release z sumami `SHA256SUMS.txt`.
+
 
 ## Bezpieczeństwo
 
@@ -192,6 +219,9 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
   `PATH` i bez Pythona w środowisku); skrypty `Start-macOS.command` / `Start-Linux.sh` sprawdziłem na macOS
   (łącznie z menu w prawdziwym terminalu). **`Start-Windows.bat`, binarki Windows/Linux/macOS-Intel i workflow GitHub
   Actions nie były uruchamiane** – składnia PowerShella została zweryfikowana parserem, workflow tylko pod kątem YAML.
+* **Instalatory:** `install.sh` przetestowałem na macOS na prawdziwym wydaniu z GitHuba (pobranie, brak kwarantanny,
+  weryfikacja sumy – także podrobionego pliku, reinstalacja, odinstalowanie, odmowa nadpisania cudzych katalogów).
+  **`install.ps1` ma zweryfikowaną tylko składnię – nie był uruchomiony na Windows**; instalator na Linuksie też nie.
 * Python 3.9+ – testowane na 3.9.6 i 3.12.
 
 ## Rozwój
@@ -217,4 +247,4 @@ Szczegóły architektury, formatu `.mtinfo.json` i dodawania backendu: [docs/ARC
 
 ## Licencja
 
-MIT
+[MIT](LICENSE)

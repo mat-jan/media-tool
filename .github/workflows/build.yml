@@ -95,9 +95,13 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Checksums
+        run: cd artifacts && sha256sum *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.zip
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
           generate_release_notes: true
           body_path: RELEASE_NOTES.md
