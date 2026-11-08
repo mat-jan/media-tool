@@ -142,7 +142,9 @@ def build_parser():
     ap = argparse.ArgumentParser(prog="drive_info.py",
                                  description="Inspect and test storage devices (SD cards, USB, SSD/HDD).")
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("list", help="list detected devices (default)").set_defaults(fn=cmd_list)
+    sub.add_parser("menu", help="interactive wizard (default in a terminal)").set_defaults(
+        fn=lambda a: __import__("driveinfo.interactive", fromlist=["run"]).run())
+    sub.add_parser("list", help="list detected devices").set_defaults(fn=cmd_list)
 
     e = sub.add_parser("export", help="export device info to CSV/JSON")
     e.add_argument("devices", nargs="*", metavar="DEVICE")
@@ -183,6 +185,9 @@ def main(argv=None):
     ap = build_parser()
     a = ap.parse_args(argv)
     if not a.cmd:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from . import interactive
+            return interactive.run()
         a = ap.parse_args(["list"])
     try:
         a.fn(a)

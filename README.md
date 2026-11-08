@@ -13,8 +13,15 @@ Trzy interfejsy / three interfaces: **CLI**, **TUI** (terminal), **GUI** (przegl
 
 ## Użycie / Usage
 
+**Najprościej:** uruchom `./drive_info.py` bez argumentów – kreator w terminalu pyta, co chcesz zrobić:
+wybierasz urządzenia, akcje (podgląd, eksport, test prędkości, test podróbek, raport), pola do eksportu,
+format i nazwę pliku. Nic nie jest zapisywane ani testowane bez Twojego potwierdzenia.
+*Simplest: run `./drive_info.py` with no arguments – a terminal wizard lets you pick devices, actions, export fields, format and file name; nothing is written without confirmation.*
+
+Dla skryptów / for scripting:
+
 ```bash
-./drive_info.py                        # lista urządzeń / list devices
+./drive_info.py list                   # lista urządzeń / list devices
 ./drive_info.py export disk4           # CSV; też: --all, -e, -f json, -o plik|-
 ./drive_info.py speed disk4            # test prędkości + klasa karty (U1/U3/V30, A1/A2)
 ./drive_info.py capacity disk4         # test podróbek: zapis + weryfikacja całej wolnej pojemności
