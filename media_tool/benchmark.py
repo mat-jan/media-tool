@@ -15,6 +15,11 @@ MIB = 1048576
 Progress = Optional[Callable[[str, float, str], None]]
 
 
+def _rate(nbytes: float, seconds: float) -> float:
+    """MB/s; zegar bywa zbyt gruby dla krótkich odczytów (Windows) – nigdy nie dzielimy przez 0."""
+    return round(nbytes / MIB / max(seconds, 1e-6), 1)
+
+
 def _percentile(values: List[float], p: float) -> float:
     if not values:
         return 0.0
@@ -38,7 +43,7 @@ def benchmark_raw(path: str, size: int, sector: int = 512, mib: int = 256, rando
     with RawReader(path) as rd:
         for i, pos in enumerate(positions):
             pos = max(0, (pos // sector) * sector)
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             got = 0
             try:
                 for j in range(per):
@@ -50,8 +55,8 @@ def benchmark_raw(path: str, size: int, sector: int = 512, mib: int = 256, rando
                         break
             except OSError:
                 errors += 1
-            el = time.monotonic() - t0
-            seq.append({"offset": pos, "bytes": got, "mb_s": round(got / MIB / el, 1) if el > 0 else 0.0})
+            el = time.perf_counter() - t0
+            seq.append({"offset": pos, "bytes": got, "mb_s": _rate(got, el) if got else 0.0})
             if progress:
                 progress("odczyt sekw.", (i + 1) / (regions + 1), "")
         # losowy odczyt 4 KiB
@@ -59,11 +64,11 @@ def benchmark_raw(path: str, size: int, sector: int = 512, mib: int = 256, rando
         blk = max(4096, sector)
         span = max(1, (size - blk) // blk)
         lat: List[float] = []
-        deadline = time.monotonic() + 15
+        deadline = time.perf_counter() + 15
         for i in range(random_ops):
             if cancel():
                 raise Cancelled("Przerwano")
-            if time.monotonic() > deadline:
+            if time.perf_counter() > deadline:
                 break
             off = rnd.randrange(span) * blk
             t = time.perf_counter()
@@ -92,10 +97,10 @@ def benchmark_files(mounts: List[str], mib: int = 256, random_ops: int = 300,
                     seed: int = 1) -> Dict[str, Any]:
     """Wariant bez uprawnień administratora: czyta istniejące pliki z zamontowanych woluminów."""
     files = []
-    walk_deadline = time.monotonic() + 8
+    walk_deadline = time.perf_counter() + 8
     for m in mounts:
         for dp, dns, fns in os.walk(m, onerror=lambda e: None):
-            if time.monotonic() > walk_deadline:
+            if time.perf_counter() > walk_deadline:
                 break
             dns[:] = [d for d in dns if not d.startswith(".")]
             for fn in fns:
@@ -113,7 +118,7 @@ def benchmark_files(mounts: List[str], mib: int = 256, random_ops: int = 300,
     files.sort(reverse=True)
     budget = mib * MIB
     got = 0
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     errors = 0
     used = []
     for size, p in files:
@@ -134,7 +139,7 @@ def benchmark_files(mounts: List[str], mib: int = 256, random_ops: int = 300,
             errors += 1
         if progress:
             progress("odczyt plików", min(got / budget, 1.0), "")
-    el = time.monotonic() - t0
+    el = time.perf_counter() - t0
     rnd = random.Random(seed)
     lat: List[float] = []
     for _ in range(random_ops):
@@ -150,7 +155,7 @@ def benchmark_files(mounts: List[str], mib: int = 256, random_ops: int = 300,
             errors += 1
     total_t = sum(l / 1000 for l in lat)
     return {"mode": "pliki z woluminu", "files_used": len(used), "bytes_read": got,
-            "seq_avg_mb_s": round(got / MIB / el, 1) if el > 0 else 0.0,
+            "seq_avg_mb_s": _rate(got, el) if got else 0.0,
             "random_4k_ops": len(lat), "random_4k_iops": round(len(lat) / total_t) if total_t > 0 else 0,
             "latency_avg_ms": round(statistics.mean(lat), 3) if lat else 0.0,
             "latency_p95_ms": round(_percentile(lat, 0.95), 3) if lat else 0.0, "read_errors": errors,

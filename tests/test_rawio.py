@@ -127,3 +127,17 @@ class PathResolutionTests(IsolatedHome, unittest.TestCase):
         from media_tool import util
         with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
             self.assertTrue(util.which("diskutil"))
+
+
+class CoarseClockTests(IsolatedHome, unittest.TestCase):
+    def test_benchmark_and_scan_report_nonzero_speed_when_clock_does_not_advance(self):
+        """Windows (Python <= 3.12) ma zegar o rozdzielczości ~15 ms: krótki odczyt trwa "0 s"."""
+        from media_tool import benchmark
+        p = make_file(os.path.join(self.tmp, "dev"), 4 * 1024 * 1024)
+        size = os.path.getsize(p)
+        with mock.patch("time.perf_counter", return_value=100.0):
+            b = benchmark.benchmark_raw(p, size, 512, mib=4, random_ops=20)
+            sc = scanning.scan(p, size, 512, chunk_size=65536)
+        self.assertGreater(b["seq_avg_mb_s"], 0)
+        self.assertTrue(all(s["mb_s"] > 0 for s in b["sequential"]))
+        self.assertGreater(sc["avg_mb_s"], 0)

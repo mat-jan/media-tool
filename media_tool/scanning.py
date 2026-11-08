@@ -96,8 +96,8 @@ def scan(path: str, size: int, sector: int = 512, chunk_size: int = 4 * MIB, sta
     seg_speed: List[Tuple[int, float]] = []
     bad: List[list] = []
     aborted = None
-    seg_start_off, seg_bytes, seg_t0 = start, 0, time.monotonic()
-    t0 = time.monotonic()
+    seg_start_off, seg_bytes, seg_t0 = start, 0, time.perf_counter()
+    t0 = time.perf_counter()
     done = 0
     with RawReader(path) as rd:
         off = start
@@ -114,23 +114,23 @@ def scan(path: str, size: int, sector: int = 512, chunk_size: int = 4 * MIB, sta
             done += n
             seg_bytes += n
             if seg_bytes >= seg_len:
-                el = time.monotonic() - seg_t0
-                seg_speed.append((seg_start_off, seg_bytes / MIB / el if el > 0 else 0.0))
-                seg_start_off, seg_bytes, seg_t0 = off, 0, time.monotonic()
+                el = time.perf_counter() - seg_t0
+                seg_speed.append((seg_start_off, seg_bytes / MIB / max(el, 1e-6)))
+                seg_start_off, seg_bytes, seg_t0 = off, 0, time.perf_counter()
             if sum(r[1] for r in bad) // sector > max_errors:
                 aborted = f"przekroczono limit {max_errors} nieczytelnych sektorów"
                 break
             if progress:
-                el = time.monotonic() - t0
+                el = time.perf_counter() - t0
                 progress("skanowanie", done / total, f"{done / MIB / el:7.1f} MB/s" if el > 0 else "")
     slow = []
     speeds = [s for _, s in seg_speed if s > 0]
     if len(speeds) >= 5:
         med = statistics.median(speeds)
         slow = [{"offset": o, "mb_s": round(s, 1)} for o, s in seg_speed if s < med * 0.25][:20]
-    el = time.monotonic() - t0
+    el = time.perf_counter() - t0
     return {"range": [start, end], "bytes_read": done, "unreadable_ranges": bad,
             "unreadable_sectors": sum(r[1] for r in bad) // sector, "aborted": aborted,
-            "avg_mb_s": round(done / MIB / el, 1) if el > 0 else 0.0,
+            "avg_mb_s": round(done / MIB / max(el, 1e-6), 1) if done else 0.0,
             "median_segment_mb_s": round(statistics.median(speeds), 1) if speeds else None,
             "slow_segments": slow, "clean": not bad and not aborted and done >= end - start}

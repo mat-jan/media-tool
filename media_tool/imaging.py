@@ -41,8 +41,8 @@ def _now() -> str:
 
 
 def _speed(done: int, t0: float) -> str:
-    el = time.monotonic() - t0
-    return f"{done / 1048576 / el:7.1f} MB/s" if el > 0 else ""
+    el = max(time.perf_counter() - t0, 1e-6)
+    return f"{done / 1048576 / el:7.1f} MB/s"
 
 
 def _under(path: str, roots: List[str]) -> Optional[str]:
@@ -155,7 +155,7 @@ def create_image(source: str, size: int, output: str, *, sector_size: int = 512,
         atomic_write_json(sidecar_path(output), state)
 
     mode = "r+b" if resume else "wb"
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     done = start
     last_state = start
     reader = RawReader(source)
@@ -191,7 +191,7 @@ def create_image(source: str, size: int, output: str, *, sector_size: int = 512,
             out.truncate(size)
         state["image"]["hash"] = h.hexdigest()
         state["finished_at"] = _now()
-        state["duration_s"] = round(time.monotonic() - t0, 2)
+        state["duration_s"] = round(time.perf_counter() - t0, 2)
         save(size, complete=True)
     except BaseException:
         # zachowaj stan wznowienia (również przy Ctrl+C i błędach); plik jest już zamknięty i zflushowany
@@ -257,7 +257,7 @@ def verify_image(source: str, size: int, image: str, *, sector_size: int = 512, 
     new_bad: List[list] = []
     total = min(size, img_size or 0)
     chunk_size = max(sector_size, (chunk_size // sector_size) * sector_size)
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     with RawReader(source) as dev, open(image, "rb") as img:
         offset = 0
         while offset < total:
@@ -327,7 +327,7 @@ def hash_file(path: str, algo: str = "sha256", progress: Progress = None,
         raise ImagingError(f"Nieznany algorytm: {algo}")
     total = file_size(path) or 1
     done = 0
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     try:
         with open(path, "rb") as f:
             while True:
