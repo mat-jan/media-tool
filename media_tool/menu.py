@@ -1,10 +1,10 @@
-"""Interaktywne menu (tryb krok po kroku)."""
+"""Interaktywne menu: grupy tematyczne, kolory, karty urządzeń przy wyborze."""
 from __future__ import annotations
 
 import os
 from typing import Callable, List, Optional, Tuple
 
-from . import capabilities, commands, config, logs
+from . import __version__, backup as backup_mod, capabilities, commands, config, logs, ui
 from .backends import BackendError
 from .capabilities import NO, PARTIAL
 from .commands import Context
@@ -14,15 +14,34 @@ from .ui import UserAbort
 from .util import human_size
 
 
-def choose_device(ctx: Context) -> str:
-    """Pokazuje listę i zwraca ścieżkę wybranego urządzenia (pełne dane pojawią się przed operacją)."""
+# ------------------------------------------------------------------ wybór urządzenia
+def _badges(d) -> str:
+    out = []
+    if d.is_system:
+        out.append(ui.red(ui.bold("SYSTEM")))
+    if d.removable:
+        out.append(ui.green("wymienny"))
+    elif d.internal:
+        out.append(ui.dim("wewnętrzny"))
+    if d.mounted:
+        out.append(ui.cyan("zamontowany"))
+    return " ".join(out)
+
+
+def choose_device(ctx: Context, title: str = "Wybierz urządzenie") -> str:
+    """Pokazuje karty urządzeń i zwraca ścieżkę wybranego (pełne dane pojawią się przed operacją)."""
+    ctx.console.info(ui.dim("Szukam nośników..."))
     devs = ctx.devices(include_virtual=False, refresh=True)
     if not devs:
         raise MediaToolError("Nie znaleziono nośników.")
-    labels = [f"{d.path:<14} {d.short_name()[:34]:<34} {human_size(d.size_detected_bytes):>10}  "
-              f"{d.device_type or 'NIEDOSTĘPNE'}  nr seryjny: {d.serial or d.card_serial or d.reader_serial or 'NIEDOSTĘPNE'}"
-              + ("  [SYSTEM]" if d.is_system else "") for d in devs]
-    return devs[ctx.console.choose("Wybierz urządzenie:", labels)].path
+    labels = []
+    for d in devs:
+        sn = d.serial or d.card_serial or d.reader_serial
+        labels.append(
+            f"{ui.bold(d.path)}  {d.short_name()[:36]}  {ui.cyan(human_size(d.size_detected_bytes))}\n"
+            f"      {ui.dim((d.device_type or 'NIEDOSTĘPNE') + ' · ' + (d.interface or '?') + ' · nr seryjny: ' + (sn or 'NIEDOSTĘPNE'))}"
+            f"  {_badges(d)}")
+    return devs[ctx.console.choose(title, labels)].path
 
 
 def _ask_path(ctx: Context, prompt: str, default: str = "") -> str:
@@ -36,6 +55,7 @@ def _dev(fn: Callable) -> Callable:
     return lambda ctx: fn(ctx, choose_device(ctx))
 
 
+# ------------------------------------------------------------------ obsługa pozycji
 def _benchmark(ctx):
     return commands.cmd_benchmark(ctx, choose_device(ctx))
 
@@ -43,8 +63,54 @@ def _benchmark(ctx):
 def _integrity(ctx):
     spec = choose_device(ctx)
     raw = ctx.console.ask("Własne obszary START:DŁUGOŚĆ oddzielone przecinkami (Enter = domyślne)", "")
-    ranges = [r.strip() for r in raw.split(",") if r.strip()] or None
-    return commands.cmd_integrity(ctx, spec, ranges)
+    return commands.cmd_integrity(ctx, spec, [r.strip() for r in raw.split(",") if r.strip()] or None)
+
+
+def _scan(ctx):
+    spec = choose_device(ctx)
+    start = ctx.console.ask("Początek zakresu (Enter = 0)", "0")
+    length = ctx.console.ask("Długość (Enter = do końca)", "")
+    return commands.cmd_scan(ctx, spec, parse_size(start), parse_size(length) if length else None)
+
+
+def _backup_dir(ctx) -> str:
+    return os.path.expanduser(ctx.cfg["backup_dir"])
+
+
+def _backup_run(ctx):
+    con = ctx.console
+    mode = con.choose("Co skopiować?", ["Pliki z nośnika (karta SD, pendrive, dysk)", "Zwykły folder z komputera"], default=0)
+    spec = source = None
+    if mode == 0:
+        spec = choose_device(ctx, "Z którego nośnika zrobić kopię?")
+    else:
+        source = _ask_path(ctx, "Folder źródłowy")
+    dest = _ask_path(ctx, "Gdzie zapisać kopię (folder docelowy)", _backup_dir(ctx))
+    kinds = con.choose("Które pliki kopiować?", ["Wszystkie", "Tylko zdjęcia i filmy", "Własny wybór kategorii"], default=0)
+    only = {0: None, 1: "zdjęcia,filmy"}.get(kinds)
+    if kinds == 2:
+        only = con.ask(f"Kategorie oddzielone przecinkami ({', '.join(sorted(set(backup_mod.CATEGORIES) | {'inne'}))})")
+    verify = con.confirm("Sprawdzić każdą kopię odczytem zwrotnym (bezpieczniej, trochę wolniej)?", True)
+    res = commands.cmd_backup_run(ctx, spec, dest, only=only, verify=verify, source_path=source)
+    if spec and not ctx.dry_run and not (res["failed"] or res["scan_errors"]):
+        if con.confirm("Kopia gotowa. Bezpiecznie wysunąć nośnik teraz?", False):
+            commands.cmd_eject(ctx, spec)
+    return res
+
+
+def _backup_verify(ctx):
+    root = _ask_path(ctx, "Folder z kopiami", _backup_dir(ctx))
+    info = backup_mod.list_backups(root)
+    if info["kind"] == "root":
+        if not info["sets"]:
+            raise MediaToolError(f"W {root} nie ma kopii media-tool.")
+        names = [f"{s['name']}  ({s['files']} plików, {human_size(s['bytes'])}, ostatnia: {s['last_run'] or '?'})" for s in info["sets"]]
+        root = info["sets"][ctx.console.choose("Którą kopię sprawdzić?", names)]["path"]
+    return commands.cmd_backup_verify(ctx, root)
+
+
+def _backup_list(ctx):
+    return commands.cmd_backup_list(ctx, _ask_path(ctx, "Folder z kopiami", _backup_dir(ctx)))
 
 
 def _image(ctx):
@@ -61,6 +127,16 @@ def _image(ctx):
 def _verify(ctx):
     spec = choose_device(ctx)
     return commands.cmd_image_verify(ctx, spec, _ask_path(ctx, "Plik obrazu do porównania"))
+
+
+def _restore(ctx):
+    ctx.console.box("Przywracanie obrazu = ZAPIS na nośnik",
+                    ["Zapisuje obraz na wybrany nośnik i NADPISUJE wszystkie jego dane.",
+                     "Dozwolone tylko na nośnikach zewnętrznych/wymiennych (nie na dysku systemowym).",
+                     "Przed zapisem trzeba będzie wpisać ścieżkę, numer seryjny i słowo NADPISZ."], kind="bad", stream="out")
+    image = _ask_path(ctx, "Plik obrazu do przywrócenia")
+    spec = choose_device(ctx, "Na który nośnik zapisać obraz?")
+    return commands.cmd_image_restore(ctx, spec, image)
 
 
 def _hash(ctx):
@@ -85,13 +161,6 @@ def _report_diff(ctx):
     return commands.cmd_report_diff(ctx, _ask_path(ctx, "Starszy raport JSON"), _ask_path(ctx, "Nowszy raport JSON"))
 
 
-def _scan(ctx):
-    spec = choose_device(ctx)
-    start = ctx.console.ask("Początek zakresu (Enter = 0)", "0")
-    length = ctx.console.ask("Długość (Enter = do końca)", "")
-    return commands.cmd_scan(ctx, spec, parse_size(start), parse_size(length) if length else None)
-
-
 def _logs(ctx):
     n = ctx.console.ask("Ile ostatnich linii", "50")
     return commands.cmd_logs(ctx, int(n) if n.isdigit() else 50)
@@ -114,43 +183,74 @@ def _config(ctx):
 
 def _dryrun(ctx):
     ctx.dry_run = not ctx.dry_run
-    ctx.console.line(f"Tryb symulacji: {'WŁĄCZONY – operacje tylko pokażą plan' if ctx.dry_run else 'wyłączony'}")
+    ctx.console.line(f"Tryb symulacji: {ui.yellow('WŁĄCZONY – operacje tylko pokażą plan') if ctx.dry_run else 'wyłączony'}")
 
 
-# (numer, klucz funkcji, tytuł, obsługa)
-ITEMS: List[Tuple[str, str, Callable]] = [
-    ("list", "Szybkie wykrywanie nośników", lambda c: commands.cmd_list(c)),
-    ("list", "Pełna lista nośników", lambda c: commands.cmd_list(c, full=True)),
-    ("inspect", "Szczegółowa identyfikacja urządzenia", _dev(commands.cmd_inspect)),
-    ("serial", "Numery seryjne", _dev(commands.cmd_serial)),
-    ("ids", "Identyfikatory sprzętowe (VID/PID/WWN/EUI-64)", _dev(commands.cmd_ids)),
-    ("uuids", "UUID i identyfikatory systemu plików", _dev(commands.cmd_uuids)),
-    ("partitions", "Partycje i woluminy", _dev(commands.cmd_partitions)),
-    ("mounts", "Punkty montowania", _dev(commands.cmd_mount_status)),
-    ("mounted", "Czy nośnik jest zamontowany", _dev(commands.cmd_mount_status)),
-    ("system", "Czy nośnik jest systemowy", _dev(commands.cmd_system_status)),
-    ("health", "SMART / stan zdrowia", _dev(commands.cmd_health)),
-    ("benchmark", "Test prędkości odczytu", _benchmark),
-    ("integrity", "Test integralności wybranych obszarów", _integrity),
-    ("image_create", "Obraz nośnika (utwórz / wznów / zbadaj)", _image),
-    ("image_verify", "Weryfikacja obrazu względem nośnika", _verify),
-    ("hash", "Suma kontrolna pliku lub obrazu", _hash),
-    ("compare", "Porównanie dwóch obrazów", _compare),
-    ("report_json", "Raport JSON", _report("json")),
-    ("report_csv", "Raport CSV", _report("csv")),
-    ("report_html", "Raport HTML", _report("html")),
-    ("report_txt", "Raport tekstowy", _report("txt")),
-    ("report_diff", "Zmiany między dwoma raportami", _report_diff),
-    ("space", "Wolne miejsce", _dev(commands.cmd_space)),
-    ("errors", "Błędy odczytu", _dev(commands.cmd_errors)),
-    ("scan", "Skanowanie nośnika (tylko odczyt)", _scan),
-    ("unmount", "Bezpieczne odmontowanie", _dev(commands.cmd_unmount)),
-    ("eject", "Przygotowanie do bezpiecznego odłączenia", _dev(commands.cmd_eject)),
-    ("logs", "Logi", _logs),
-    ("config", "Konfiguracja", _config),
-    ("diagnose", "Tryb diagnostyczny", lambda c: commands.cmd_diagnose(c)),
-    ("dry_run", "Tryb symulacji (dry-run) – włącz/wyłącz", _dryrun),
+Item = Tuple[str, str, Callable]
+# (nazwa grupy, [(klucz funkcji, tytuł, obsługa)])
+GROUPS: List[Tuple[str, List[Item]]] = [
+    ("NOŚNIKI I IDENTYFIKACJA", [
+        ("list", "Szybkie wykrywanie nośników", lambda c: commands.cmd_list(c)),
+        ("list", "Pełna lista nośników (wszystkie dane)", lambda c: commands.cmd_list(c, full=True)),
+        ("inspect", "Szczegółowa identyfikacja urządzenia", _dev(commands.cmd_inspect)),
+        ("serial", "Numery seryjne (urządzenie / karta SD / czytnik)", _dev(commands.cmd_serial)),
+        ("ids", "Identyfikatory sprzętowe (VID/PID/WWN/EUI-64)", _dev(commands.cmd_ids)),
+        ("uuids", "UUID i identyfikatory systemu plików", _dev(commands.cmd_uuids)),
+        ("partitions", "Partycje i woluminy", _dev(commands.cmd_partitions)),
+        ("mounts", "Punkty montowania", _dev(commands.cmd_mount_status)),
+        ("mounted", "Czy nośnik jest zamontowany", _dev(commands.cmd_mount_status)),
+        ("system", "Czy nośnik jest systemowy", _dev(commands.cmd_system_status)),
+        ("space", "Wolne miejsce", _dev(commands.cmd_space)),
+    ]),
+    ("KOPIE ZAPASOWE", [
+        ("backup", "Kopia plików z karty / dysku (przyrostowa, z weryfikacją)", _backup_run),
+        ("backup_verify", "Sprawdź, czy kopia plików jest nienaruszona", _backup_verify),
+        ("backup_list", "Lista kopii plików", _backup_list),
+        ("image_create", "Obraz całego nośnika (utwórz / wznów / zbadaj)", _image),
+        ("image_verify", "Porównaj obraz z nośnikiem", _verify),
+        ("image_restore", "Przywróć obraz na nośnik  (ZAPIS – nadpisuje dane!)", _restore),
+    ]),
+    ("DIAGNOSTYKA (tylko odczyt)", [
+        ("health", "SMART / stan zdrowia", _dev(commands.cmd_health)),
+        ("benchmark", "Test prędkości odczytu", _benchmark),
+        ("integrity", "Test integralności wybranych obszarów", _integrity),
+        ("errors", "Błędy odczytu", _dev(commands.cmd_errors)),
+        ("scan", "Skanowanie nośnika", _scan),
+    ]),
+    ("RAPORTY", [
+        ("report_json", "Raport JSON", _report("json")),
+        ("report_csv", "Raport CSV", _report("csv")),
+        ("report_html", "Raport HTML", _report("html")),
+        ("report_txt", "Raport tekstowy", _report("txt")),
+        ("report_diff", "Zmiany między dwoma raportami", _report_diff),
+    ]),
+    ("NARZĘDZIA", [
+        ("hash", "Suma kontrolna pliku lub obrazu", _hash),
+        ("compare", "Porównanie dwóch obrazów", _compare),
+        ("unmount", "Bezpieczne odmontowanie", _dev(commands.cmd_unmount)),
+        ("eject", "Przygotowanie do bezpiecznego odłączenia", _dev(commands.cmd_eject)),
+        ("logs", "Logi", _logs),
+        ("config", "Konfiguracja", _config),
+        ("diagnose", "Tryb diagnostyczny", lambda c: commands.cmd_diagnose(c)),
+        ("dry_run", "Tryb symulacji (dry-run) – włącz/wyłącz", _dryrun),
+    ]),
 ]
+ITEMS: List[Item] = [it for _, items in GROUPS for it in items]
+
+
+def render_menu(ctx: Context, feats) -> None:
+    con = ctx.console
+    con.banner(f"media-tool {__version__}", f"{ctx.backend.name} · administrator: {'tak' if commands.is_admin() else 'nie'}"
+                                            + ("   [TRYB SYMULACJI]" if ctx.dry_run else ""))
+    con.line(ui.dim(f"  {ui.green(ui.sym('ok'))} dostępne   {ui.yellow(ui.sym('partial'))} częściowo   {ui.red(ui.sym('bad'))} niedostępne"))
+    n = 0
+    for gname, items in GROUPS:
+        con.line(f"\n {ui.heading(gname)}")
+        for key, title, _ in items:
+            n += 1
+            f = feats.get(key)
+            con.line(f"  {ui.cyan(f'{n:>2}')}  {f.mark if f else ' '}  {title}")
+    con.line(f"\n  {ui.cyan(f'{len(ITEMS) + 1:>2}')}     Wyjście")
 
 
 def run(ctx: Context) -> int:
@@ -158,13 +258,7 @@ def run(ctx: Context) -> int:
     feats = capabilities.features()
     logs.audit("menu_start")
     while True:
-        con.line("\n=== media-tool – menu ===" + ("   [TRYB SYMULACJI]" if ctx.dry_run else ""))
-        con.line(f"System: {ctx.backend.name}   Administrator: {'tak' if commands.is_admin() else 'nie'}   "
-                 f"(✔ dostępne  ◐ częściowo  ✖ niedostępne)")
-        for i, (key, title, _) in enumerate(ITEMS, 1):
-            f = feats.get(key)
-            con.line(f" {i:>2}) {f.mark if f else ' '} {title}")
-        con.line(f" {len(ITEMS) + 1:>2})   Wyjście")
+        render_menu(ctx, feats)
         try:
             raw = con.ask("Wybór")
         except UserAbort:
@@ -182,6 +276,7 @@ def run(ctx: Context) -> int:
             continue
         if f and f.status == PARTIAL and f.reason:
             con.warn(f"Funkcja częściowo dostępna: {f.reason}")
+        con.line(f"\n{ui.heading('▸ ' + title if not ui._ascii_mode() else '> ' + title)}")
         try:
             handler(ctx)
         except (UserAbort, KeyboardInterrupt):

@@ -13,8 +13,9 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from . import backup as backup_mod
 from . import benchmark as bench
-from . import capabilities, config, imaging, logs, reports, safety, scanning
+from . import capabilities, config, imaging, logs, reports, safety, scanning, ui
 from .backends import Backend, BackendError
 from .errors import Cancelled, MediaToolError, RawAccessError, SafetyError
 from .models import UNAVAILABLE, Device
@@ -45,8 +46,10 @@ class Context:
         if not self.as_json:
             self.console.progress(label, frac, extra)
 
-    def pick(self, spec: str, risk: Optional[Risk] = None, action: str = "") -> Device:
-        """Wybiera urządzenie. Dla operacji na nośniku wymaga potwierdzenia; dla zmiany stanu – pełnego."""
+    def pick(self, spec: str, risk: Optional[Risk] = None, action: str = "", *, pre_check=None,
+             word: Optional[str] = None, warning: Optional[str] = None) -> Device:
+        """Wybiera urządzenie. Dla operacji na nośniku wymaga potwierdzenia; dla zmiany stanu/zapisu – pełnego
+        (ścieżka + numer seryjny + słowo). `pre_check(d)` działa przed jakimkolwiek pytaniem i może zablokować operację."""
         d = safety.resolve_device(self.devices(include_virtual=True, refresh=True), spec)
         if risk is None:
             return d
@@ -55,14 +58,21 @@ class Context:
         if self.dry_run:
             # symulacja nic nie wykonuje – pokazujemy urządzenie i plan, bez potwierdzeń
             safety.show_device(self.console, d)
-            if risk is Risk.DEVICE_STATE and d.is_system:
+            if risk in (Risk.DEVICE_STATE, Risk.DEVICE_WRITE) and d.is_system:
                 self.console.warn("To dysk systemowy – prawdziwa operacja zostałaby zablokowana.")
+            if pre_check:
+                try:
+                    pre_check(d)
+                except MediaToolError as e:
+                    self.console.warn(f"Prawdziwa operacja zostałaby zablokowana: {e}")
             return d
-        if risk is Risk.DEVICE_STATE:
-            safety.confirm_typed(self.console, d, action)
+        if pre_check:
+            pre_check(d)
+        if risk in (Risk.DEVICE_STATE, Risk.DEVICE_WRITE):
+            safety.confirm_typed(self.console, d, action, word=word or safety.CONFIRM_WORD, warning=warning)
         else:
             safety.confirm_read(self.console, d, action, enabled=self.cfg.get("confirm_read_ops", True))
-        return safety.revalidate(self.backend, d, strict=risk is Risk.DEVICE_STATE)
+        return safety.revalidate(self.backend, d, strict=risk in (Risk.DEVICE_STATE, Risk.DEVICE_WRITE))
 
     # ---- wyjście
     def out(self, data: Dict[str, Any], lines: List[str]) -> Dict[str, Any]:
@@ -76,7 +86,7 @@ class Context:
 
 def _v(x: Any) -> str:
     if x is None or x == "":
-        return UNAVAILABLE
+        return ui.dim(UNAVAILABLE)
     if isinstance(x, bool):
         return "tak" if x else "nie"
     if isinstance(x, list):
@@ -94,7 +104,7 @@ def _size(n: Optional[int]) -> str:
 
 def _pairs(pairs: List[tuple], indent: str = "  ") -> List[str]:
     w = max(len(k) for k, _ in pairs)
-    return [f"{indent}{k:<{w}} : {v}" for k, v in pairs]
+    return [f"{indent}{ui.dim(k.ljust(w))} : {v}" for k, v in pairs]
 
 
 # ===================================================================== lista / identyfikacja
@@ -115,7 +125,7 @@ def cmd_list(ctx: Context, full: bool = False, external: bool = False, include_v
     rows = [[d.path, f"{_v(d.vendor)} {_v(d.model)}".replace(UNAVAILABLE + " ", ""),
              human_size(d.size_detected_bytes), _v(d.device_type), _v(d.interface),
              "tak" if d.mounted else ("nie" if d.mounted is not None else UNAVAILABLE),
-             "SYSTEM" if d.is_system else ""] for d in devs]
+             ui.red("SYSTEM") if d.is_system else ""] for d in devs]
     return ctx.out(data, format_table(["URZĄDZENIE", "PRODUCENT / MODEL", "POJEMNOŚĆ", "TYP", "INTERFEJS", "MONT.", ""], rows))
 
 
@@ -123,7 +133,7 @@ def inspect_lines(d: Device) -> List[str]:
     L: List[str] = []
 
     def sec(title, pairs):
-        L.append(f"\n{title}")
+        L.append(f"\n{ui.heading(title)}")
         L.extend(_pairs(pairs))
 
     sec("Identyfikacja", [("Ścieżka urządzenia", d.path), ("Nazwa systemowa", _v(d.system_name)),
@@ -143,7 +153,7 @@ def inspect_lines(d: Device) -> List[str]:
     sec("Stan", [("Zamontowany", _v(d.mounted)), ("Punkty montowania", _v(d.mount_points)),
                  ("Tylko do odczytu", _v(d.read_only)), ("Dysk systemowy", _v(d.is_system)),
                  ("Wymienny", _v(d.removable)), ("Wewnętrzny", _v(d.internal))])
-    L.append("\nStan zdrowia")
+    L.append(f"\n{ui.heading('Stan zdrowia')}")
     L.extend(_pairs(health_pairs(d)))
     L.append(f"\nData i godzina odczytu: {d.collected_at}")
     for n in d.notes:
@@ -311,7 +321,7 @@ def cmd_benchmark(ctx: Context, spec: str, mib: Optional[int] = None) -> Dict:
         if not mounts:
             raise MediaToolError("Brak uprawnień do surowego urządzenia i brak zamontowanych woluminów")
         res = bench.benchmark_files(mounts, mib, progress=ctx.progress)
-    lines = [f"Test prędkości odczytu – tryb: {res['mode']}", f"  Odczyt sekwencyjny (średnio): {res['seq_avg_mb_s']} MB/s"]
+    lines = [ui.heading(f"Test prędkości odczytu – tryb: {res['mode']}"), f"  Odczyt sekwencyjny (średnio): {res['seq_avg_mb_s']} MB/s"]
     if "seq_min_mb_s" in res:
         lines.append(f"  min / max                   : {res['seq_min_mb_s']} / {res['seq_max_mb_s']} MB/s")
         for s in res["sequential"]:
@@ -333,7 +343,7 @@ def cmd_integrity(ctx: Context, spec: str, ranges: Optional[List[str]] = None, s
     logs.audit("integrity", device=d.path)
     res = scanning.integrity(path, size, sector, areas, samples, passes=passes, seed=seed, progress=ctx.progress)
     pt = res["partition_table"]
-    lines = [f"Integralność {d.path}: {'OK' if res['passed'] else 'WYKRYTO PROBLEMY'}",
+    lines = [(ui.good if res["passed"] else ui.problem)(f"Integralność {d.path}: {'OK' if res['passed'] else 'WYKRYTO PROBLEMY'}"),
              f"  Sprawdzone obszary          : {res['areas_checked']} (przebiegi: {res['passes']}, seed: {_v(res['seed'])})",
              f"  Obszary z niestabilnym odczytem : {res['unstable_areas']}",
              f"  Obszary z błędami odczytu       : {res['areas_with_read_errors']}",
@@ -355,7 +365,7 @@ def cmd_scan(ctx: Context, spec: str, start: int = 0, length: Optional[int] = No
                                                          "rozmiar bloku": chunk})
     logs.audit("scan", device=d.path, start=start, length=length)
     res = scanning.scan(path, size, sector, chunk, start, length, ctx.cfg["max_read_errors"], progress=ctx.progress)
-    lines = [f"Skan {d.path}: {'CZYSTO' if res['clean'] else 'WYKRYTO PROBLEMY'}",
+    lines = [(ui.good if res["clean"] else ui.problem)(f"Skan {d.path}: {'CZYSTO' if res['clean'] else 'WYKRYTO PROBLEMY'}"),
              f"  Przeczytano            : {human_size(res['bytes_read'])}", f"  Średnia prędkość       : {res['avg_mb_s']} MB/s",
              f"  Nieczytelne sektory    : {res['unreadable_sectors']}"]
     for o, l in res["unreadable_ranges"][:20]:
@@ -417,7 +427,7 @@ def cmd_image_create(ctx: Context, spec: str, output: str, overwrite: bool = Fal
                                  max_errors=ctx.cfg["max_read_errors"], source_meta=meta, resume=resume,
                                  overwrite=overwrite, avoid_paths=mounts, algo=algo, progress=ctx.progress)
     bad = state["bad_ranges"]
-    lines = [f"Obraz gotowy: {output}", f"  Rozmiar     : {_size(size)}",
+    lines = [ui.good(f"Obraz gotowy: {output}"), f"  Rozmiar     : {_size(size)}",
              f"  Suma {state['image']['hash_algorithm']} : {state['image']['hash']}",
              f"  Nieczytelne sektory: {state['read_errors']}"]
     if bad:
@@ -435,7 +445,7 @@ def cmd_image_verify(ctx: Context, spec: str, image: str) -> Dict:
     logs.audit("image_verify", device=d.path, image=image)
     res = imaging.verify_image(path, size, image, sector_size=sector, chunk_size=ctx.cfg["chunk_size_mib"] * 1048576,
                                progress=ctx.progress)
-    lines = [f"Weryfikacja {image} względem {d.path}: {'ZGODNY' if res['match'] else 'RÓŻNICE / NIEKOMPLETNY'}",
+    lines = [(ui.good if res["match"] else ui.problem)(f"Weryfikacja {image} względem {d.path}: {'ZGODNY' if res['match'] else 'RÓŻNICE / NIEKOMPLETNY'}"),
              f"  Rozmiar nośnika / obrazu : {res['device_size']} / {res['image_size']}"
              f" ({'zgodne' if res['size_match'] else 'RÓŻNE'})",
              f"  Porównano                : {human_size(res['compared_bytes'])}",
@@ -489,11 +499,197 @@ def cmd_compare(ctx: Context, a: str, b: str, algo: Optional[str] = None) -> Dic
     if ctx.dry_run:
         return _plan(ctx, "porównanie obrazów", {"A": a, "B": b, "rozmiary": [file_size(a), file_size(b)]})
     res = imaging.compare_images(a, b, algo=algo, chunk_size=ctx.cfg["chunk_size_mib"] * 1048576, progress=ctx.progress)
-    lines = [f"Porównanie: {'IDENTYCZNE' if res['identical'] else 'RÓŻNE'}",
+    lines = [(ui.good if res["identical"] else ui.problem)(f"Porównanie: {'IDENTYCZNE' if res['identical'] else 'RÓŻNE'}"),
              f"  A: {a}  ({res['size_a']} B)  {res['hash_a']}", f"  B: {b}  ({res['size_b']} B)  {res['hash_b']}"]
     if not res["identical"]:
         lines.append(f"  Pierwsza różnica @ {res['first_difference_offset']}, bloki różne: {res['different_chunks']}")
     return ctx.out(res, lines)
+
+
+# ===================================================================== backup plików
+CATEGORY_ALIASES = {"photos": "zdjęcia", "photo": "zdjęcia", "zdjecia": "zdjęcia", "video": "filmy", "videos": "filmy",
+                    "films": "filmy", "docs": "dokumenty", "documents": "dokumenty", "other": "inne"}
+
+
+def parse_categories(text: Optional[str]) -> Optional[set]:
+    """'zdjęcia,filmy' (lub photos,videos) -> {'zdjęcia','filmy'}; None = wszystko."""
+    if not text:
+        return None
+    valid = set(backup_mod.CATEGORIES) | {"inne"}
+    out = set()
+    for part in text.split(","):
+        key = part.strip().lower()
+        key = CATEGORY_ALIASES.get(key, key)
+        if key not in valid:
+            raise MediaToolError(f"Nieznana kategoria: '{part.strip()}'. Dostępne: {', '.join(sorted(valid))}")
+        out.add(key)
+    return out
+
+
+def _choose_volume(ctx: Context, d: Device, volume: Optional[str]) -> str:
+    mounts = [m for m in (d.mount_points or []) if m]
+    if volume:
+        if volume not in mounts and not os.path.isdir(volume):
+            raise MediaToolError(f"{volume} nie jest punktem montowania tego urządzenia")
+        return volume
+    if not mounts:
+        raise MediaToolError(f"{d.path} nie ma zamontowanego woluminu – zamontuj nośnik (backup czyta pliki z woluminu)")
+    if len(mounts) == 1:
+        return mounts[0]
+    if ctx.console.interactive and not ctx.as_json:
+        return mounts[ctx.console.choose("Który wolumin skopiować?", mounts)]
+    raise MediaToolError("Urządzenie ma kilka woluminów – wskaż jeden przez --volume: " + ", ".join(mounts))
+
+
+def cmd_backup_run(ctx: Context, spec: Optional[str], dest: str, name: Optional[str] = None,
+                   only: Optional[str] = None, verify: bool = True, volume: Optional[str] = None,
+                   source_path: Optional[str] = None) -> Dict:
+    cats = parse_categories(only)
+    if source_path:
+        source, meta, label = source_path, {"source_path": source_path}, os.path.basename(os.path.abspath(source_path))
+        refuse_same = False
+    else:
+        if not spec:
+            raise MediaToolError("Podaj urządzenie albo --source FOLDER")
+        d = ctx.pick(spec, Risk.FILE_WRITE, f"backup plików → {dest}")
+        source = _choose_volume(ctx, d, volume)
+        part = next((p for p in d.partitions if source in (p.mount_points or [])), None)
+        label = (part.volume_label if part and part.volume_label else None) or d.volume_label or \
+                f"{d.model or 'nosnik'}-{(d.serial or d.card_serial or d.reader_serial or '')[:8]}".rstrip("-")
+        meta = {**d.stable_identity(), "volume": source, "volume_label": label, "device_path": d.path}
+        refuse_same = True
+    name = backup_mod.sanitize_name(name or label)
+    logs.audit("backup", source=source, dest=dest, name=name, dry_run=ctx.dry_run, only=sorted(cats) if cats else None)
+    res = backup_mod.run_backup(source, dest, name, only=cats, verify=verify, dry_run=ctx.dry_run,
+                                refuse_same_volume=refuse_same, source_meta=meta, progress=ctx.progress)
+    mb = lambda n: human_size(n)
+    head = "[SYMULACJA] backup – nic nie zostało skopiowane" if ctx.dry_run else "Backup zakończony"
+    lines = [ui.heading(head),
+             f"  Źródło        : {res['source']}", f"  Cel           : {res['target']}",
+             f"  Przejrzano    : {res['scanned_files']} plików ({mb(res['scanned_bytes'])}), kategorie: {_v(res['categories'])}",
+             f"  {'Do skopiowania' if ctx.dry_run else 'Skopiowano    '}: {res['copied']} plików ({mb(res['copied_bytes'])})",
+             f"  Bez zmian     : {res['skipped_unchanged']} (pominięte, już w kopii)"]
+    if res["deduplicated"]:
+        lines.append(f"  Te same dane  : {res['deduplicated']} (zmieniła się tylko data – nie kopiowano ponownie)")
+    if res["renamed_collisions"]:
+        lines.append(ui.caution(f"Kolizje nazw   : {res['renamed_collisions']} plików o tej samej nazwie, ale innej zawartości "
+                                f"zapisano z przyrostkiem _<suma> (nic nie nadpisano)"))
+    for w in res["warnings"]:
+        lines.append(ui.caution(w))
+    for rel, why in res["failed"][:15]:
+        lines.append(ui.problem(f"{rel}: {why}"))
+    if len(res["failed"]) > 15:
+        lines.append(ui.problem(f"… i {len(res['failed']) - 15} kolejnych błędów (pełna lista w pliku uruchomienia)"))
+    for e in res["scan_errors"][:5]:
+        lines.append(ui.problem(f"nie można odczytać: {e}"))
+    if not ctx.dry_run:
+        bad = res["failed"] or res["scan_errors"]
+        lines.append(ui.problem("Backup zakończony z błędami – uruchom ponownie, aby spróbować skopiować brakujące pliki")
+                     if bad else ui.good(f"Wszystko skopiowane i zweryfikowane{'' if verify else ' (bez weryfikacji odczytem)'}. "
+                                         f"Źródło nie zostało zmienione."))
+    return ctx.out(res, lines)
+
+
+def cmd_backup_verify(ctx: Context, path: str) -> Dict:
+    if ctx.dry_run:
+        return _plan(ctx, "weryfikacja kopii", {"folder": path, "istnieje zestaw": backup_mod.is_backup_set(path)})
+    res = backup_mod.verify_backup(path, ctx.progress)
+    lines = [ui.heading(f"Weryfikacja kopii: {path}"),
+             f"  Sprawdzono wersji plików : {res['versions_checked']}", f"  Zgodne                   : {res['ok']}"]
+    lines += [ui.problem(f"BRAKUJE: {m}") for m in res["missing"][:20]]
+    lines += [ui.problem(f"USZKODZONY (inna suma): {c}") for c in res["corrupt"][:20]]
+    if res["extra_count"]:
+        lines.append(ui.dim(f"  Pliki spoza indeksu (dodane ręcznie): {res['extra_count']}"))
+    lines.append(ui.good("Kopia jest nienaruszona.") if res["healthy"] else ui.problem("Kopia jest uszkodzona lub niekompletna."))
+    return ctx.out(res, lines)
+
+
+def cmd_backup_list(ctx: Context, path: str) -> Dict:
+    res = backup_mod.list_backups(path)
+    if res["kind"] == "root":
+        lines = [ui.heading(f"Zestawy kopii w {path}")]
+        if not res["sets"]:
+            lines.append("  Nie znaleziono kopii media-tool w tym folderze.")
+        else:
+            lines += format_table(["ZESTAW", "PLIKÓW", "ROZMIAR", "URUCHOMIEŃ", "OSTATNIE"],
+                                  [[s["name"], str(s["files"]), human_size(s["bytes"]), str(s["runs"]),
+                                    _v(s["last_run"])] for s in res["sets"]])
+    else:
+        lines = [ui.heading(f"Kopia: {path}"), f"  Plików: {res['files']}  (wersji: {res['versions']}, razem {human_size(res['bytes'])})", ""]
+        lines += format_table(["DATA", "NOWYCH", "ROZMIAR", "BEZ ZMIAN", "BŁĘDY", "ŹRÓDŁO"],
+                              [[_v(r["started_at"]), str(r["copied"]), human_size(r["copied_bytes"]),
+                                str(r["skipped_unchanged"]), str(r["failed"]), _v(r["source"])] for r in res["runs"]])
+    return ctx.out(res, lines)
+
+
+# ===================================================================== przywracanie obrazu (ZAPIS NA NOŚNIK)
+def restore_supported() -> bool:
+    """Przywracanie na Windows jest wyłączone (wymaga blokowania woluminów)."""
+    return sys.platform != "win32"
+
+
+def cmd_image_restore(ctx: Context, spec: str, image: str, allow_unverified: bool = False) -> Dict:
+    if not restore_supported():
+        raise MediaToolError("Przywracanie obrazów nie jest dostępne na Windows w tej wersji "
+                             "(wymaga blokowania woluminów). Użyj macOS lub Linuksa.")
+
+    def pre_check(d: Device) -> None:
+        if d.is_system is not False:
+            raise SafetyError("Dysk systemowy albo nie można tego ustalić (NIEDOSTĘPNE) – przywracanie zablokowane.")
+        if d.internal is not False and not d.removable:
+            raise SafetyError("Przywracanie jest dozwolone tylko na nośnikach zewnętrznych/wymiennych "
+                              "(ten wygląda na wewnętrzny).")
+        if d.read_only:
+            raise SafetyError("Nośnik jest tylko do odczytu.")
+        if not d.size_detected_bytes:
+            raise MediaToolError("System nie podał rozmiaru nośnika – operacja niemożliwa")
+        plan = imaging.plan_restore(ctx.backend.raw_path(d), d.size_detected_bytes, image, sector_size=d.sector_size or 512,
+                                    allow_unverified_image=allow_unverified, avoid_paths=list(d.mount_points or []))
+        if not plan["ok"]:
+            raise MediaToolError("; ".join(plan["problems"]))
+        info = [f"Obraz : {image}", f"Rozmiar: {_size(plan['image_size'])}  →  nośnik {_size(d.size_detected_bytes)}"]
+        side = plan["metadata"]
+        if side:
+            src = side.get("source", {})
+            info.append(f"Źródło obrazu: {' '.join(x for x in (src.get('vendor'), src.get('model')) if x) or UNAVAILABLE}"
+                        f"  (utworzony {side.get('created_at')})")
+        info += [ui.caution(w) for w in plan["warnings"]]
+        ctx.console.box("Przywracanie obrazu", info, kind="warn")
+
+    d = ctx.pick(spec, Risk.DEVICE_WRITE, f"PRZYWRÓCENIE OBRAZU {os.path.basename(image)}", pre_check=pre_check,
+                 word="NADPISZ",
+                 warning=f"WSZYSTKIE DANE na nośniku {d_name(ctx, spec)} zostaną NIEODWRACALNIE nadpisane obrazem.")
+    raw, size, sector = _raw_target(ctx, d)
+    if ctx.dry_run:
+        plan = imaging.plan_restore(raw, size, image, sector_size=sector, allow_unverified_image=allow_unverified,
+                                    avoid_paths=list(d.mount_points or []))
+        return ctx.out({"dry_run": True, **{k: v for k, v in plan.items() if k != "metadata"}},
+                       [f"[SYMULACJA] przywrócenie obrazu – nic nie zostanie zapisane:", f"  obraz  : {image}",
+                        f"  cel    : {raw} ({_size(size)})",
+                        f"  wynik kontroli: {'OK' if plan['ok'] else 'PROBLEMY: ' + '; '.join(plan['problems'])}"] +
+                       [f"  ! {w}" for w in plan["warnings"]])
+    logs.audit("image_restore_start", device=d.path, image=image, serial=d.serial)
+    if d.mounted:
+        ctx.console.info("Odmontowuję nośnik przed zapisem...")
+        ctx.backend.unmount(d)
+        d = safety.revalidate(ctx.backend, d, strict=False)
+    res = imaging.restore_image(raw, size, image, sector_size=sector, chunk_size=ctx.cfg["chunk_size_mib"] * 1048576,
+                                allow_unverified_image=allow_unverified, avoid_paths=[], progress=ctx.progress)
+    logs.audit("image_restore_done", device=d.path, image=image, verified=res["verified"])
+    lines = [ui.heading(f"Przywracanie obrazu na {d.path}"), f"  Zapisano   : {human_size(res['bytes_written'])} w {res['duration_s']} s"]
+    lines.append(ui.good("Zapis zweryfikowany odczytem zwrotnym – zgodny z obrazem.") if res["verified"] else
+                 ui.problem(f"WERYFIKACJA NIE PRZESZŁA: {res['mismatched_chunks']} bloków różni się "
+                            f"(pierwsza różnica @ {res['first_mismatch_offset']}). Nośnik może być uszkodzony."))
+    lines.append(ui.dim("  Odłącz i podłącz nośnik ponownie, aby system odczytał nowe partycje."))
+    return ctx.out({"path": d.path, "image": image, **res}, lines)
+
+
+def d_name(ctx: Context, spec: str) -> str:
+    try:
+        d = safety.resolve_device(ctx.devices(include_virtual=True), spec)
+        return f"{d.short_name()} ({human_size(d.size_detected_bytes)}, {d.path})"
+    except MediaToolError:
+        return spec
 
 
 # ===================================================================== raporty
@@ -536,8 +732,8 @@ def cmd_report_diff(ctx: Context, old_path: str, new_path: str) -> Dict:
         except (OSError, ValueError) as e:
             raise MediaToolError(f"Nie można wczytać raportu JSON {p}: {e}")
     res = reports.diff_reports(load(old_path), load(new_path))
-    lines = [f"Porównanie raportów: {res['old_generated_at']} → {res['new_generated_at']}",
-             "  Brak zmian." if res["identical"] else ""]
+    lines = [ui.heading(f"Porównanie raportów: {res['old_generated_at']} → {res['new_generated_at']}"),
+             ui.good("Brak zmian.") if res["identical"] else ""]
     lines += [f"  + nowe urządzenie: {p}" for p in res["added"]] + [f"  - usunięte urządzenie: {p}" for p in res["removed"]]
     lines += [f"  ~ {c['device']} · {c['field']}: {c['old']} → {c['new']}" for c in res["changes"]]
     return ctx.out(res, [l for l in lines if l != ""])
@@ -605,7 +801,7 @@ def cmd_config(ctx: Context, action: str = "show", key: Optional[str] = None, va
 def cmd_features(ctx: Context) -> Dict:
     feats = capabilities.features()
     return ctx.out({k: {"title": f.title, "status": f.status, "reason": f.reason} for k, f in feats.items()},
-                   ["Dostępność funkcji na tym systemie:"] + capabilities.summary_lines())
+                   [ui.heading("Dostępność funkcji na tym systemie:")] + capabilities.summary_lines())
 
 
 def cmd_diagnose(ctx: Context) -> Dict:

@@ -1,11 +1,12 @@
 # media-tool
 
-Narzędzie CLI do **identyfikacji, diagnostyki, raportowania, obrazowania i weryfikacji nośników danych**:
+Narzędzie CLI do **identyfikacji, diagnostyki, raportowania, kopii zapasowych i obrazowania nośników danych**:
 dysków, pendrive'ów, kart SD, czytników kart. Działa na **macOS, Linux i Windows**, w czystym Pythonie
 (3.9+, bez zależności).
 
-**Zasada nadrzędna:** użytkownik sam wybiera, co chce zrobić. Wszystko jest **tylko do odczytu**,
-dopóki wyraźnie nie wybierzesz innej operacji – a nawet wtedy program nigdy nie zapisuje na nośnik.
+**Zasada nadrzędna:** użytkownik sam wybiera, co chce zrobić. Wszystko jest **tylko do odczytu**, dopóki wyraźnie
+nie wybierzesz innej operacji. **Jedyna operacja zapisu na nośnik to przywracanie obrazu** (`image restore`) –
+dozwolona tylko na nośnikach zewnętrznych, z podwójnym potwierdzeniem i obowiązkową weryfikacją zapisu.
 
 ## Spis treści
 - [Instalacja – bez instalowania pakietów](#instalacja--bez-instalowania-pakietów)
@@ -13,6 +14,7 @@ dopóki wyraźnie nie wybierzesz innej operacji – a nawet wtedy program nigdy 
 - [Polecenia](#polecenia)
 - [Menu interaktywne](#menu-interaktywne)
 - [Co program pokazuje](#co-program-pokazuje)
+- [Backup plików](#backup-plików)
 - [Obrazy nośników](#obrazy-nośników)
 - [Dostępność funkcji na systemach](#dostępność-funkcji-na-systemach)
 - [Stan testów i znane ograniczenia](#stan-testów-i-znane-ograniczenia)
@@ -92,16 +94,18 @@ potem PyInstaller na każdym systemie; przy tagu `v*` powstaje Release z sumami 
 |---|---|---|
 | Metadane systemu | `list`, `inspect`, `serial`, `ids`, `uuids`, `partitions`, `mount-status`, `system-status`, `space`, `health` | brak (to tylko odczyt informacji od systemu) |
 | Odczyt nośnika | `benchmark`, `integrity`, `scan`, `errors`, `image create/resume/verify` | pokazanie danych urządzenia + `t/n` (`--yes` pomija pytanie) |
+| Kopia plików | `backup run` | pokazanie danych urządzenia + `t/n`; czyta pliki z zamontowanego woluminu, zapisuje **tylko** w folderze docelowym |
 | Zmiana stanu | `unmount`, `eject` | wpisanie **pełnej ścieżki**, **numeru seryjnego** (jeśli jest) i słowa **`POTWIERDZAM`**; `--yes` **nie działa** |
-| Zapis na nośnik | – | **program nie wykonuje takich operacji** |
+| **Zapis na nośnik** | `image restore` | jak wyżej, ale słowo **`NADPISZ`** + ostrzeżenie o nieodwracalności; tylko nośniki zewnętrzne, nie systemowe, nie tylko-do-odczytu; obraz sprawdzany przed zapisem, zapis weryfikowany po; **niedostępne na Windows** |
 
 * Urządzenia nigdy nie wybiera się „po cichu" tylko po nazwie: przed każdą operacją na nośniku widzisz producenta,
   model, numer seryjny, pojemność, ścieżkę, typ, status montowania, czy jest systemowy, partycje i punkty montowania.
   Można też wybrać po cechach: `serial:XYZ`, `wwn:…`, `uuid:…`. Niejednoznaczny wybór jest odrzucany.
 * Po potwierdzeniu dane urządzenia są **odczytywane ponownie**; jeśli się zmieniły (inny numer seryjny, rozmiar,
   partycje, zamontowanie…) operacja jest przerywana.
-* **Dysk systemowy** – odmontowanie/odłączenie zablokowane bezwarunkowo; operacje odczytu tylko z ostrzeżeniem.
-* Nośnik jest otwierany wyłącznie do odczytu. Plik obrazu **nie może leżeć na obrazowanym nośniku** (sprawdzane
+* **Dysk systemowy** – odmontowanie, odłączenie i przywracanie zablokowane bezwarunkowo; operacje odczytu tylko
+  z ostrzeżeniem. Przywracanie odmawia też, gdy **nie da się ustalić**, czy dysk jest systemowy.
+* Poza `image restore` nośnik jest otwierany wyłącznie do odczytu. Plik obrazu **nie może leżeć na obrazowanym nośniku** (sprawdzane
   po identyfikatorze woluminu i ścieżce) i nie nadpisuje istniejących plików bez `--overwrite`.
 * `--dry-run` / `dry-run POLECENIE` – pokazuje plan i sprawdza warunki wstępne, niczego nie czyta ani nie zmienia.
 * Każda operacja trafia do logu (`media-tool logs`); raporty można generować z **zamaskowanymi numerami seryjnymi**.
@@ -129,8 +133,13 @@ media-tool hash FILE [--algo sha256]
 media-tool compare IMAGE1 IMAGE2
 media-tool image create DEVICE -o backup.img [--overwrite]
 media-tool image resume DEVICE -o backup.img
+media-tool image restore DEVICE --image backup.img   # ZAPIS: nadpisuje nośnik (wymaga wpisania NADPISZ)
 media-tool image verify DEVICE --image backup.img
 media-tool image inspect backup.img [--hash]
+media-tool backup run DEVICE -o ~/kopie [--only zdjęcia,filmy] [--name N] [--volume PATH] [--no-verify]
+media-tool backup run --source ~/Zdjęcia -o ~/kopie # kopia zwykłego folderu
+media-tool backup verify ~/kopie/ETYKIETA          # czy kopia jest nienaruszona
+media-tool backup list ~/kopie
 media-tool unmount DEVICE                  # wymaga wpisanego potwierdzenia
 media-tool eject DEVICE                    # odmontowanie + przygotowanie do odłączenia
 media-tool dry-run image create DEVICE -o backup.img
@@ -148,17 +157,21 @@ obrazy różne, skan/integralność z błędami, raporty różne); `130` – prz
 
 ## Menu interaktywne
 
-`media-tool` (bez argumentów, w terminalu) lub `media-tool menu` – 32 pozycje prowadzące krok po kroku:
+`media-tool` (bez argumentów, w terminalu) lub `media-tool menu` – kolorowe menu w pięciu grupach:
 
-1 szybkie wykrywanie · 2 pełna lista · 3 identyfikacja · 4 numery seryjne · 5 identyfikatory sprzętowe ·
-6 UUID/FS · 7 partycje · 8 punkty montowania · 9 zamontowanie · 10 dysk systemowy · 11 SMART ·
-12 test prędkości · 13 integralność · 14 obraz (utwórz/wznów/zbadaj) · 15 weryfikacja obrazu · 16 sumy kontrolne ·
-17 porównanie obrazów · 18–21 raporty JSON/CSV/HTML/TXT · 22 zmiany między raportami · 23 wolne miejsce ·
-24 błędy odczytu · 25 skanowanie · 26 odmontowanie · 27 przygotowanie do odłączenia · 28 logi · 29 konfiguracja ·
-30 diagnostyka · 31 tryb symulacji (przełącznik) · 32 wyjście.
+* **Nośniki i identyfikacja:** wykrywanie, pełna lista, identyfikacja, numery seryjne, identyfikatory sprzętowe,
+  UUID, partycje, punkty montowania, status zamontowania i systemowy, wolne miejsce.
+* **Kopie zapasowe:** kopia plików z karty/dysku, weryfikacja kopii, lista kopii, obraz całego nośnika
+  (utwórz/wznów/zbadaj), porównanie obrazu z nośnikiem, **przywracanie obrazu**.
+* **Diagnostyka (tylko odczyt):** SMART, test prędkości, test integralności, błędy odczytu, skan.
+* **Raporty:** JSON, CSV, HTML, tekst, zmiany między raportami.
+* **Narzędzia:** sumy kontrolne, porównanie obrazów, odmontowanie, przygotowanie do odłączenia, logi,
+  konfiguracja, diagnostyka, tryb symulacji.
 
 Przy każdej pozycji widać, czy jest dostępna na tym systemie: `✔` dostępne, `◐` częściowo, `✖` niedostępne
-(z powodem).
+(z powodem). Wybór urządzenia pokazuje karty z nazwą, rozmiarem, typem, numerem seryjnym i plakietkami
+(`SYSTEM`, `wymienny`, `zamontowany`). Interfejs używa kolorów tylko w prawdziwym terminalu; `NO_COLOR=1` je wyłącza,
+`MEDIA_TOOL_ASCII=1` zamienia ramki i symbole na zwykłe znaki.
 
 ## Co program pokazuje
 
@@ -173,6 +186,26 @@ oraz data i godzina odczytu.
 Rozróżniane są: numer seryjny urządzenia ≠ kontrolera ≠ czytnika ≠ karty; UUID systemu plików ≠ PARTUUID ≠
 nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 
+## Backup plików
+
+`media-tool backup run DEVICE -o FOLDER` kopiuje **pliki** z zamontowanego woluminu karty/dysku do wskazanego folderu
+(zdjęcia, filmy, dokumenty…). Nie wymaga uprawnień administratora.
+
+* **Źródło jest tylko czytane** – nic na nim nie jest zmieniane ani usuwane. Cel nie może leżeć na kopiowanym nośniku.
+* **Przyrostowo:** kolejne uruchomienia kopiują tylko nowe i zmienione pliki (reszta jest pomijana bez czytania).
+  Przerwany backup wystarczy uruchomić ponownie.
+* **Nic nie jest nadpisywane.** Aparaty po sformatowaniu karty numerują zdjęcia od nowa (`IMG_0001.JPG` ma inną
+  zawartość niż ostatnio) – nowa wersja trafia obok jako `IMG_0001_<8 znaków SHA-256>.JPG`. Ten sam plik ze zmienioną
+  tylko datą nie jest kopiowany drugi raz.
+* **Weryfikacja:** każda kopia jest czytana ponownie z miejsca docelowego i porównywana sumą SHA-256 ze źródłem
+  (`--no-verify` to wyłącza).
+* **Filtry:** `--only zdjęcia,filmy` (też `photos,videos`); pomijane są pliki systemowe (`.Spotlight-V100`, `.Trashes`,
+  `System Volume Information`, `.DS_Store`…).
+* Układ: `FOLDER/<etykieta karty>/…pliki…` oraz `.media-tool-backup/` z indeksem i dziennikiem każdego uruchomienia.
+* `backup verify FOLDER/<zestaw>` sprawdza po czasie, czy kopia jest nienaruszona; `backup list FOLDER` pokazuje
+  zestawy i uruchomienia. `backup run --source FOLDER -o …` kopiuje zwykły folder.
+* `--dry-run` pokazuje, co zostałoby skopiowane, nic nie zapisując.
+
 ## Obrazy nośników
 
 * `image create` czyta nośnik blokami, liczy sumę kontrolną „w locie" i zapisuje plik obrazu oraz
@@ -185,6 +218,12 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 * `image inspect` pokazuje metadane i **tablicę partycji odczytaną z samych danych** (GPT/MBR z kontrolą CRC,
   nagłówka zapasowego i ochronnego MBR).
 * `compare` porównuje dwa obrazy (pierwsza różnica, liczba różnych bloków, sumy).
+* **`image restore DEVICE --image FILE` – ZAPISUJE obraz na nośnik i nadpisuje wszystkie jego dane.** Najpierw
+  odmawia, jeśli: to dysk systemowy lub nie da się tego ustalić, nośnik jest wewnętrzny lub tylko do odczytu, obraz jest
+  większy od nośnika, niekompletny, ma niezgodną sumę kontrolną, nie ma metadanych (chyba że
+  `--allow-image-without-metadata` dla zwykłych `.img`) albo leży na nośniku docelowym. Dopiero potem prosi o wpisanie
+  ścieżki, numeru seryjnego i słowa `NADPISZ`, odmontowuje nośnik, zapisuje i **weryfikuje zapis odczytem zwrotnym**
+  (niezgodność = kod wyjścia 3). Niedostępne na Windows w tej wersji.
 
 ## Dostępność funkcji na systemach
 
@@ -200,12 +239,15 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 
 ## Stan testów i znane ograniczenia
 
-* **86 testów automatycznych** (`python3 -m unittest discover -s tests -t .`): obrazowanie, wznawianie,
-  uszkodzone sektory, weryfikacja, GPT, odczyty wyrównane do sektora (symulacja surowych urządzeń),
-  zabezpieczenia i potwierdzenia, raporty, konfiguracja, CLI. Przechodzą na Pythonie 3.9.6 i 3.12.
-* **macOS – przetestowane na prawdziwym systemie** (dysk wewnętrzny oraz utworzony na czas testu obraz dysku
-  `hdiutil`): lista, identyfikacja, skan, integralność, benchmark, obraz + weryfikacja + inspekcja (suma zgodna
-  z `shasum`), odmontowanie z potwierdzeniem.
+* **138 testów automatycznych** (`python3 -m unittest discover -s tests -t .`): obrazowanie, wznawianie,
+  uszkodzone sektory, weryfikacja, GPT, odczyty wyrównane do sektora (symulacja surowych urządzeń), backup
+  (przyrostowość, kolizje nazw, błędy odczytu, przerwanie), przywracanie (głównie przypadki odmowy), zabezpieczenia
+  i potwierdzenia, raporty, konfiguracja, CLI, interfejs. Zabezpieczenia sprawdzono też mutacyjnie (celowe psucie
+  kodu musi wywalać testy). CI uruchamia je na Ubuntu, macOS i Windows (Python 3.9 i 3.13).
+* **macOS – przetestowane na prawdziwym systemie** (dysk wewnętrzny oraz obrazy dysków `hdiutil` jako „karty"):
+  lista, identyfikacja, skan, integralność, benchmark, obraz + weryfikacja + inspekcja (suma zgodna z `shasum`),
+  odmontowanie z potwierdzeniem, **backup prawdziwej karty (przyrostowy, kolizje nazw) oraz prawdziwe przywracanie
+  obrazu na drugi nośnik** – suma surowego urządzenia po zapisie identyczna z obrazem (`shasum`).
 * **Linux i Windows – tylko na danych przykładowych** (parsery `lsblk`/PowerShell na przygotowanych danych).
   Backendy są napisane, ale **nie uruchamiałem ich na tych systemach ani na prawdziwej karcie SD**.
   Szczególnie do sprawdzenia: odczyt VID/PID i numeru seryjnego na Windows, Shell *Eject*, odczyt surowy
@@ -214,15 +256,18 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
   (`SPCardReaderDataType`) dla numeru seryjnego karty są nieznane – pełne surowe dane zapisują się w polu `extra`.
 * Test prędkości omija pamięć podręczną systemu „w miarę możliwości" (macOS `F_NOCACHE`, Linux `posix_fadvise`);
   na Windows wynik może być zawyżony. Wynik jest orientacyjny.
-* Nie ma (celowo) operacji zapisu na nośnik: formatowania, przywracania obrazu, czyszczenia.
-* **Pakiety do pobrania:** `.pyz` i binarkę macOS (arm64) zbudowałem i uruchomiłem lokalnie (także z ograniczonym
-  `PATH` i bez Pythona w środowisku); skrypty `Start-macOS.command` / `Start-Linux.sh` sprawdziłem na macOS
-  (łącznie z menu w prawdziwym terminalu). **`Start-Windows.bat`, binarki Windows/Linux/macOS-Intel i workflow GitHub
-  Actions nie były uruchamiane** – składnia PowerShella została zweryfikowana parserem, workflow tylko pod kątem YAML.
+* **Przywracanie obrazu** jest przetestowane tylko na macOS (obrazy dysków); na Linuksie napisane, ale
+  **nietestowane na prawdziwym nośniku**, na Windows celowo wyłączone. Nie ma formatowania ani czyszczenia nośników.
+* **Backup plików** przetestowany na prawdziwej karcie-obrazie na macOS i w CI na wszystkich trzech systemach
+  (na plikach); nie na prawdziwej karcie SD w czytniku USB.
+* **Pakiety do pobrania:** workflow GitHub Actions buduje i testuje paczki na Windows, Linux i macOS (arm64 + Intel)
+  i publikuje wydania z sumami SHA-256. Lokalnie uruchamiałem binarkę macOS, `.pyz` i skrypty
+  `Start-macOS.command` / `Start-Linux.sh` (z menu w prawdziwym terminalu). **`Start-Windows.bat` i binarki
+  Windows/Linux nie były uruchamiane przeze mnie ani na prawdziwym urządzeniu** – CI sprawdza tylko `--version` i testy.
 * **Instalatory:** `install.sh` przetestowałem na macOS na prawdziwym wydaniu z GitHuba (pobranie, brak kwarantanny,
   weryfikacja sumy – także podrobionego pliku, reinstalacja, odinstalowanie, odmowa nadpisania cudzych katalogów).
   **`install.ps1` ma zweryfikowaną tylko składnię – nie był uruchomiony na Windows**; instalator na Linuksie też nie.
-* Python 3.9+ – testowane na 3.9.6 i 3.12.
+* Python 3.9+ – testowane na 3.9.6, 3.12 i (w CI) 3.13.
 
 ## Rozwój
 
@@ -234,6 +279,7 @@ media_tool/
   imaging.py     obrazy, wznawianie, weryfikacja     rawio.py   odczyt surowy z obsługą błędów I/O
   scanning.py    integralność + skan                 benchmark.py  test prędkości
   partition_tables.py  MBR/GPT                       reports.py    JSON/CSV/HTML/TXT + diff
+  backup.py      kopia plików (przyrostowa, z weryfikacją)
   commands.py    logika poleceń (wspólna dla CLI i menu)
   cli.py  menu.py  ui.py  config.py  logs.py  capabilities.py
 tests/           testy (unittest, bez zależności)

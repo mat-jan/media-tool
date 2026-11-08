@@ -14,6 +14,7 @@ from typing import List, Optional
 from . import logs
 from .errors import DeviceChanged, DeviceNotFound, SafetyError
 from .models import UNAVAILABLE, Device
+from . import ui
 from .ui import Console, UserAbort
 from .util import human_size
 
@@ -28,7 +29,7 @@ class Risk(enum.Enum):
 
 
 def _v(x) -> str:
-    return UNAVAILABLE if x is None or x == "" else str(x)
+    return ui.dim(UNAVAILABLE) if x is None or x == "" else str(x)
 
 
 def describe_device(d: Device) -> List[str]:
@@ -37,7 +38,8 @@ def describe_device(d: Device) -> List[str]:
         mounts = ", ".join(d.mount_points[:3]) + (f" (+{len(d.mount_points) - 3} kolejnych)" if len(d.mount_points) > 3 else "")
     else:
         mounts = "brak" if d.mount_points is not None else UNAVAILABLE
-    sysflag = {True: "TAK – DYSK SYSTEMOWY", False: "nie", None: f"{UNAVAILABLE} (nie można potwierdzić)"}[d.is_system]
+    sysflag = {True: ui.red(ui.bold("TAK – DYSK SYSTEMOWY")), False: ui.green("nie"),
+               None: ui.yellow(f"{UNAVAILABLE} (nie można potwierdzić)")}[d.is_system]
     lines = [
         f"  Ścieżka urządzenia : {d.path}",
         f"  Producent          : {_v(d.vendor)}",
@@ -61,9 +63,7 @@ def describe_device(d: Device) -> List[str]:
 
 
 def show_device(console: Console, d: Device) -> None:
-    console.info("Wybrane urządzenie:")
-    for ln in describe_device(d):
-        console.info(ln)
+    console.box("Wybrane urządzenie", describe_device(d), kind="warn" if d.is_system else "info")
     for note in d.notes:
         if "numer seryjny" in note.lower():
             console.warn(note)
@@ -118,8 +118,9 @@ def confirm_read(console: Console, d: Device, action: str, enabled: bool = True)
         raise UserAbort()
 
 
-def confirm_typed(console: Console, d: Device, action: str) -> None:
-    """Potwierdzenie operacji zmieniającej stan: ścieżka + numer seryjny + POTWIERDZAM."""
+def confirm_typed(console: Console, d: Device, action: str, word: str = CONFIRM_WORD,
+                  warning: Optional[str] = None) -> None:
+    """Potwierdzenie operacji zmieniającej stan: ścieżka + numer seryjny + słowo (domyślnie POTWIERDZAM)."""
     show_device(console, d)
     if d.is_system:
         raise SafetyError("To jest dysk systemowy – operacja zablokowana.")
@@ -128,6 +129,8 @@ def confirm_typed(console: Console, d: Device, action: str) -> None:
     if not console.interactive:
         raise SafetyError("Ta operacja wymaga interaktywnego potwierdzenia w terminalu "
                           "(--yes nie działa dla operacji zmieniających stan).")
+    if warning:
+        console.box("UWAGA – OPERACJA NIEODWRACALNA", [warning], kind="bad")
     console.warn(f"Operacja '{action}' zmieni stan urządzenia.")
     typed_path = console.ask(f"Wpisz pełną ścieżkę urządzenia ({d.path})")
     if typed_path != d.path:
@@ -140,8 +143,8 @@ def confirm_typed(console: Console, d: Device, action: str) -> None:
             raise SafetyError("Numer seryjny nie zgadza się – przerwano.")
     else:
         console.warn("Numer seryjny jest NIEDOSTĘPNY – potwierdzenie tylko ścieżką i słowem.")
-    word = console.ask(f"Wpisz {CONFIRM_WORD}, aby kontynuować")
-    if word != CONFIRM_WORD:
+    typed = console.ask(f"Wpisz {word}, aby kontynuować")
+    if typed != word:
         logs.audit("confirm_failed", action=action, device=d.path, reason="word")
         raise SafetyError("Brak potwierdzenia – przerwano.")
     logs.audit("confirmed", action=action, device=d.path, fingerprint=d.state_fingerprint())

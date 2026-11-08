@@ -1,7 +1,15 @@
 ## media-tool – wersja beta
 
-Pierwsza publiczna wersja nowego, modularnego narzędzia do identyfikacji, diagnostyki, raportowania i obrazowania
-nośników danych (macOS, Linux, Windows). Wszystkie operacje są domyślnie **tylko do odczytu**; program nie zapisuje na nośnik.
+Narzędzie do identyfikacji, diagnostyki, raportowania, **kopii zapasowych** i obrazowania nośników danych
+(macOS, Linux, Windows). Operacje są domyślnie **tylko do odczytu**; jedyny zapis na nośnik to przywracanie obrazu
+(`image restore`) – za podwójnym potwierdzeniem (`NADPISZ`), tylko na nośnikach zewnętrznych, z weryfikacją zapisu.
+
+### Nowości w 1.0.0-beta.3
+- **Backup plików** z karty/dysku: przyrostowy, bez nadpisywania (powtórzone nazwy zdjęć z aparatu trafiają obok
+  z przyrostkiem), weryfikowany sumą SHA-256, bez uprawnień administratora; `backup verify` / `backup list`.
+- **Przywracanie obrazu na nośnik** (macOS, Linux; nie Windows): wiele blokad bezpieczeństwa, weryfikacja po zapisie.
+- **Nowy wygląd terminala:** kolory, ramki, grupowane menu, paski postępu z czasem do końca, karty urządzeń.
+  Wyłączanie kolorów: `NO_COLOR=1`.
 
 ### Instalacja (bez ostrzeżeń systemu, bez administratora)
 

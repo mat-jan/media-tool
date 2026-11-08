@@ -15,6 +15,7 @@ SCHEMA: Dict[str, tuple] = {
     "max_read_errors": (1000, "Po tylu nieczytelnych sektorach obrazowanie/skan zostaje przerwane"),
     "benchmark_size_mib": (256, "Ilość danych czytanych w teście prędkości (MiB)"),
     "report_dir": (".", "Domyślny katalog zapisu raportów"),
+    "backup_dir": ("~/media-tool/backups", "Domyślny folder docelowy kopii plików"),
     "redact_serials": (False, "Maskuj numery seryjne w raportach (do bezpiecznego udostępniania)"),
     "confirm_read_ops": (True, "Pytaj o potwierdzenie przed operacjami tylko do odczytu"),
     "log_level": ("INFO", "Poziom logowania: DEBUG, INFO, WARNING, ERROR"),

@@ -19,7 +19,8 @@ class Feature:
 
     @property
     def mark(self) -> str:
-        return {OK: "✔", PARTIAL: "◐", NO: "✖"}[self.status]
+        from . import ui
+        return {OK: ui.green(ui.sym("ok")), PARTIAL: ui.yellow(ui.sym("partial")), NO: ui.red(ui.sym("bad"))}[self.status]
 
 
 def features(os_name: str = None) -> Dict[str, Feature]:
@@ -65,6 +66,13 @@ def features(os_name: str = None) -> Dict[str, Feature]:
     add("image_create", "Tworzenie obrazu", raw_status, raw_reason)
     add("image_verify", "Weryfikacja obrazu względem nośnika", raw_status, raw_reason)
     add("image_inspect", "Inspekcja obrazu")
+    add("backup", "Backup plików z nośnika (przyrostowy, z weryfikacją)")
+    add("backup_verify", "Weryfikacja kopii plików")
+    add("backup_list", "Lista kopii plików")
+    if win:
+        add("image_restore", "Przywracanie obrazu na nośnik", NO, "niedostępne na Windows w tej wersji (blokowanie woluminów)")
+    else:
+        add("image_restore", "Przywracanie obrazu na nośnik", raw_status, raw_reason)
     add("hash", "Sumy kontrolne")
     add("compare", "Porównanie obrazów")
     for fmt in ("json", "csv", "html", "txt"):
