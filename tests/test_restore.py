@@ -141,6 +141,14 @@ class RestoreCoreTests(IsolatedHome, unittest.TestCase):
         self.assertEqual(r["first_mismatch_offset"], 4096)
 
 
+class PlatformDecisionTests(unittest.TestCase):
+    def test_restore_is_unavailable_only_on_windows(self):
+        from media_tool import commands
+        for platform, expected in (("win32", False), ("darwin", True), ("linux", True)):
+            with mock.patch("media_tool.commands.sys.platform", platform):
+                self.assertEqual(commands.restore_supported(), expected, platform)
+
+
 class RestoreCliTests(IsolatedHome, unittest.TestCase):
     CONFIRM = ["/dev/fake0", "SN12345", "NADPISZ"]
 
@@ -153,6 +161,10 @@ class RestoreCliTests(IsolatedHome, unittest.TestCase):
         make_file(self.raw, SIZE, seed=42)
         self.dev = make_device(size=SIZE, mounts=None)
         self.backend = FakeBackend([self.dev], raw=self.raw)
+        # przywracanie istnieje tylko poza Windows – testy zachowania symulują taki system (też na CI z Windows)
+        p = mock.patch("media_tool.commands.restore_supported", return_value=True)
+        p.start()
+        self.addCleanup(p.stop)
 
     def run_cli(self, *argv, inputs=None):
         con = scripted_console(inputs)
@@ -245,7 +257,7 @@ class RestoreCliTests(IsolatedHome, unittest.TestCase):
 
     def test_windows_is_refused(self):
         before = rb(self.raw)
-        with mock.patch("media_tool.commands.sys.platform", "win32"):
+        with mock.patch("media_tool.commands.restore_supported", return_value=False):
             code, _, err = self.run_cli("image", "restore", "fake0", "--image", self.img, inputs=self.CONFIRM)
         self.assertEqual(code, 1)
         self.assertIn("Windows", err)

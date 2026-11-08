@@ -623,8 +623,13 @@ def cmd_backup_list(ctx: Context, path: str) -> Dict:
 
 
 # ===================================================================== przywracanie obrazu (ZAPIS NA NOŚNIK)
+def restore_supported() -> bool:
+    """Przywracanie na Windows jest wyłączone (wymaga blokowania woluminów)."""
+    return sys.platform != "win32"
+
+
 def cmd_image_restore(ctx: Context, spec: str, image: str, allow_unverified: bool = False) -> Dict:
-    if sys.platform == "win32":
+    if not restore_supported():
         raise MediaToolError("Przywracanie obrazów nie jest dostępne na Windows w tej wersji "
                              "(wymaga blokowania woluminów). Użyj macOS lub Linuksa.")
 
