@@ -64,6 +64,18 @@ class RawReader:
             got += len(part)
         return b"".join(chunks)
 
+    def read_aligned(self, offset: int, length: int, sector: int) -> bytes:
+        """Czyta dowolny zakres, ale fizycznie żąda od urządzenia odczytu wyrównanego do sektora
+        (wymóg surowych urządzeń Windows/macOS). Błąd I/O -> pusty wynik, bez wyjątku."""
+        sector = max(sector, 1)
+        start = (offset // sector) * sector
+        end = -(-(offset + length) // sector) * sector
+        try:
+            data = self.read_at(start, end - start)
+        except OSError:
+            return b""
+        return data[offset - start: offset - start + length]
+
     def read_resilient(self, offset: int, length: int, sector: int, bad: List[list]) -> bytes:
         """Jak read_at, ale przy błędzie I/O czyta sektor po sektorze; nieczytelne sektory = zera
         i zapis w `bad`. Zwraca dokładnie `length` bajtów, chyba że napotkano koniec danych."""
@@ -87,6 +99,15 @@ class RawReader:
                 break
             pos += n
         return bytes(out)
+
+
+def can_read(path: str) -> bool:
+    """Czy da się otworzyć do odczytu? (os.access nie działa dla \\\\.\\PHYSICALDRIVE na Windows)."""
+    try:
+        with open(path, "rb", buffering=0):
+            return True
+    except OSError:
+        return False
 
 
 def file_size(path: str) -> Optional[int]:

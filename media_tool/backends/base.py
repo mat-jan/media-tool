@@ -1,11 +1,10 @@
 """Wspólny interfejs backendów systemowych + odczyt SMART przez smartctl."""
 from __future__ import annotations
 
-import shutil
 from typing import Dict, List, Optional
 
 from ..models import Device, Health
-from ..util import run, run_json
+from ..util import run, run_json, which
 
 
 class BackendError(RuntimeError):
@@ -37,7 +36,7 @@ class Backend:
 
     # ---- wspólne
     def tool_status(self) -> Dict[str, Optional[str]]:
-        return {t: shutil.which(t) for t in self.tools + ["smartctl"]}
+        return {t: which(t) for t in self.tools + ["smartctl"]}
 
     def read_health(self, device: Device) -> Health:
         h = smartctl_health(self.raw_path(device) if self.smart_uses_raw else device.path)
@@ -53,7 +52,7 @@ class Backend:
 
 def smartctl_health(path: str) -> Health:
     """Odczyt SMART przez smartctl (JSON). Nie zgaduje: brak danych -> pola None."""
-    if not shutil.which("smartctl"):
+    if not which("smartctl"):
         return Health(source="smartctl", note="smartctl nie jest zainstalowany (pakiet smartmontools)")
     data = None
     for extra in ([], ["-d", "sat"]):

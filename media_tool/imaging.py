@@ -15,8 +15,8 @@ from typing import Any, Callable, Dict, List, Optional
 from . import __version__
 from .errors import Cancelled, ImagingError
 from .partition_tables import inspect_table
-from .rawio import RawReader, add_range, file_size, overlaps
-from .util import atomic_write_json
+from .rawio import RawReader, add_range, can_read, file_size, overlaps
+from .util import atomic_write_json, chown_to_invoking_user
 
 SIDECAR_SUFFIX = ".mtinfo.json"
 STATE_EVERY = 64 * 1024 * 1024
@@ -101,7 +101,7 @@ def plan_create(source: str, size: int, output: str, *, resume: bool = False, ov
         need = size - done
         if free < need + 16 * 1048576:
             problems.append(f"Za mało miejsca: potrzeba {need} B, wolne {free} B")
-    readable = os.access(source, os.R_OK)
+    readable = can_read(source)
     if not readable:
         problems.append(f"Brak uprawnień do odczytu {source} (uruchom z sudo / jako administrator)")
     return {"source": source, "output": output, "size_bytes": size, "resume_from": done,
@@ -161,6 +161,7 @@ def create_image(source: str, size: int, output: str, *, sector_size: int = 512,
     reader = RawReader(source)
     try:
         with open(output, mode) as out:
+            chown_to_invoking_user(output)
             out.seek(start)
             save(start)
             offset = start

@@ -6,3 +6,7 @@ drive_report_*
 media-tool-report-*
 *.mtinfo.json
 *.img
+dist/
+build/
+*.spec
+*.egg-info/

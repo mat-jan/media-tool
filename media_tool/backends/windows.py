@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from typing import Any, List, Optional
 
 from ..models import Device, Health, Partition
-from ..util import run
+from ..util import run, which
 from .base import Backend, BackendError, smartctl_health
 
 PS_LIST = r"""
@@ -84,7 +83,7 @@ class WindowsBackend(Backend):
     smart_uses_raw = False
 
     def _ps(self) -> str:
-        exe = shutil.which("powershell") or shutil.which("pwsh")
+        exe = which("powershell") or which("pwsh")
         if not exe:
             raise BackendError("PowerShell nie jest dostępny")
         return exe

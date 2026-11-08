@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List
 
 from . import config
+from .util import chown_to_invoking_user, makedirs_owned
 
 LOGGER_NAME = "media_tool"
 _configured = False
@@ -25,8 +26,9 @@ def setup(level: str = "INFO", verbose: bool = False) -> logging.Logger:
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     logger.propagate = False
     try:
-        log_file().parent.mkdir(parents=True, exist_ok=True)
+        makedirs_owned(str(log_file().parent))
         h = RotatingFileHandler(log_file(), maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+        chown_to_invoking_user(str(log_file()))
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(h)
     except OSError:

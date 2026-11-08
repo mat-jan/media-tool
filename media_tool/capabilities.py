@@ -1,12 +1,11 @@
 """Macierz funkcji: co jest dostępne na danym systemie i dlaczego (lub dlaczego nie)."""
 from __future__ import annotations
 
-import shutil
 import sys
 from dataclasses import dataclass
 from typing import Dict, List
 
-from .util import is_admin
+from .util import is_admin, which
 
 OK, PARTIAL, NO = "dostępne", "częściowo", "niedostępne"
 
@@ -27,17 +26,17 @@ def features(os_name: str = None) -> Dict[str, Feature]:
     os_name = os_name or sys.platform
     mac, linux, win = os_name == "darwin", os_name.startswith("linux"), os_name == "win32"
     admin = is_admin()
-    smartctl = bool(shutil.which("smartctl"))
+    smartctl = bool(which("smartctl"))
     F: Dict[str, Feature] = {}
 
     def add(key, title, status=OK, reason=""):
         F[key] = Feature(key, title, status, reason)
 
-    if linux and not shutil.which("lsblk"):
+    if linux and not which("lsblk"):
         base_status, base_reason = NO, "brak lsblk (pakiet util-linux)"
-    elif win and not (shutil.which("powershell") or shutil.which("pwsh")):
+    elif win and not (which("powershell") or which("pwsh")):
         base_status, base_reason = NO, "brak PowerShell"
-    elif mac and not shutil.which("diskutil"):
+    elif mac and not which("diskutil"):
         base_status, base_reason = NO, "brak diskutil"
     else:
         base_status, base_reason = OK, ""
@@ -76,11 +75,11 @@ def features(os_name: str = None) -> Dict[str, Feature]:
         add("unmount", "Bezpieczne odmontowanie", PARTIAL, "tylko woluminy z literą dysku (Shell Eject)")
         add("eject", "Przygotowanie do odłączenia", PARTIAL, "tylko woluminy z literą dysku (Shell Eject)")
     elif linux:
-        tool = shutil.which("udisksctl") or shutil.which("umount")
+        tool = which("udisksctl") or which("umount")
         add("unmount", "Bezpieczne odmontowanie", OK if tool else NO, "" if tool else "brak umount/udisksctl")
         add("eject", "Przygotowanie do odłączenia",
-            OK if (shutil.which("udisksctl") or shutil.which("eject")) else NO,
-            "" if (shutil.which("udisksctl") or shutil.which("eject")) else "brak udisksctl/eject")
+            OK if (which("udisksctl") or which("eject")) else NO,
+            "" if (which("udisksctl") or which("eject")) else "brak udisksctl/eject")
     else:
         add("unmount", "Bezpieczne odmontowanie")
         add("eject", "Przygotowanie do odłączenia")

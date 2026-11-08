@@ -18,7 +18,7 @@ from . import capabilities, config, imaging, logs, reports, safety, scanning
 from .backends import Backend, BackendError
 from .errors import Cancelled, MediaToolError, RawAccessError, SafetyError
 from .models import UNAVAILABLE, Device
-from .rawio import file_size
+from .rawio import can_read, file_size
 from .safety import Risk
 from .ui import Console, format_table
 from .util import human_size, is_admin
@@ -297,7 +297,7 @@ def cmd_benchmark(ctx: Context, spec: str, mib: Optional[int] = None) -> Dict:
     path, size, sector = _raw_target(ctx, d)
     if ctx.dry_run:
         return _plan(ctx, "test prędkości odczytu", {"urządzenie": path, "odczyt": f"{mib} MiB w 4 miejscach + losowe 4 KiB",
-                                                    "dostęp do surowego urządzenia": os.access(path, os.R_OK)})
+                                                    "dostęp do surowego urządzenia": can_read(path)})
     logs.audit("benchmark", device=d.path, mib=mib)
     try:
         res = bench.benchmark_raw(path, size, sector, mib, progress=ctx.progress)
@@ -616,7 +616,7 @@ def cmd_diagnose(ctx: Context) -> Dict:
         listing = {"ok": True, "count": len(devs)}
     except Exception as e:
         devs, listing = [], {"ok": False, "error": str(e)}
-    raw = {d.path: os.access(ctx.backend.raw_path(d), os.R_OK) for d in devs}
+    raw = {d.path: can_read(ctx.backend.raw_path(d)) for d in devs}
     data = {"os": platform.platform(), "python": sys.version.split()[0], "backend": ctx.backend.name,
             "administrator": is_admin(), "tools": tools, "device_listing": listing, "raw_read_access": raw,
             "config_file": str(config.config_path()), "log_file": str(logs.log_file()),

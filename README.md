@@ -8,7 +8,7 @@ dysków, pendrive'ów, kart SD, czytników kart. Działa na **macOS, Linux i Win
 dopóki wyraźnie nie wybierzesz innej operacji – a nawet wtedy program nigdy nie zapisuje na nośnik.
 
 ## Spis treści
-- [Instalacja i uruchomienie](#instalacja-i-uruchomienie)
+- [Szybki start – bez instalowania pakietów](#szybki-start--bez-instalowania-pakietów)
 - [Bezpieczeństwo](#bezpieczeństwo)
 - [Polecenia](#polecenia)
 - [Menu interaktywne](#menu-interaktywne)
@@ -18,18 +18,46 @@ dopóki wyraźnie nie wybierzesz innej operacji – a nawet wtedy program nigdy 
 - [Stan testów i znane ograniczenia](#stan-testów-i-znane-ograniczenia)
 - [Rozwój](#rozwój)
 
-## Instalacja i uruchomienie
+## Szybki start – bez instalowania pakietów
+
+Pobierz archiwum ze strony **Releases**, rozpakuj i **kliknij dwukrotnie** skrypt dla swojego systemu.
+Skrypt zapyta, czy pracować w trybie podstawowym (tylko informacje), czy pełnym (obrazy, skan, testy – poprosi
+o hasło/zgodę administratora), i uruchomi menu.
+
+| System | Plik do kliknięcia | Co jest potrzebne |
+|---|---|---|
+| Windows | `Start-Windows.bat` | nic, jeśli pobrałeś paczkę `windows-x64` (zawiera `media-tool.exe`); w paczce `universal`: Python 3.9+ |
+| macOS | `Start-macOS.command` | nic, jeśli pobrałeś paczkę `macos-arm64` / `macos-x64`; w paczce `universal`: Python 3.9+ (jest w „Narzędziach wiersza poleceń" Apple) |
+| Linux | `Start-Linux.sh` (menedżer plików: „Uruchom w terminalu") | nic dodatkowego w paczce `linux-x64`; w `universal`: Python 3.9+; `lsblk` z pakietu `util-linux` (jest wszędzie) |
+
+Paczki: `media-tool-<system>.zip` = jeden samodzielny program (bez Pythona) + skrypt startowy;
+`media-tool-universal.zip` = jeden plik `media-tool.pyz` (62 KiB) + skrypty dla wszystkich systemów.
+Skrypt startowy sam wybiera, co uruchomić: gotowy program → `media-tool.pyz` → katalog źródłowy `media_tool/`
+(więc działa też po pobraniu samego kodu jako ZIP z GitHuba). Raporty i obrazy trafiają domyślnie do
+`~/media-tool` (`%USERPROFILE%\media-tool`; zmiana: zmienna `MEDIA_TOOL_OUTPUT_DIR`). Pliki utworzone przez `sudo`
+są przekazywane zwykłemu użytkownikowi.
+
+**Pierwsze uruchomienie – ostrzeżenia systemu** (program nie jest podpisany certyfikatem):
+* **Windows SmartScreen:** „Więcej informacji" → „Uruchom mimo to".
+* **macOS Gatekeeper:** prawy klik na pliku → „Otwórz" → „Otwórz" (lub `xattr -dr com.apple.quarantine <katalog>`).
+  Jeśli bit wykonywalny zginął przy rozpakowaniu: `bash Start-macOS.command`.
+
+Możesz też uruchamiać bez skryptów:
 
 ```bash
-python3 -m media_tool list            # bez instalacji, z katalogu repozytorium
-pip install .                         # lub: polecenie `media-tool`
-media-tool                            # w terminalu uruchamia menu interaktywne
+python3 media-tool.pyz                # menu (potrzebny tylko Python 3.9+)
+python3 -m media_tool list            # z katalogu repozytorium, bez instalacji
+./media-tool list                     # samodzielna binarka
+pip install .                         # opcjonalnie: polecenie `media-tool`
 ```
 
 Odczyt **surowych urządzeń** (obrazowanie, skan, test integralności, test prędkości) wymaga uprawnień
-administratora: `sudo media-tool …` (macOS/Linux) lub terminal „jako administrator" (Windows).
-Informacje o urządzeniach (`list`, `inspect`, `serial`, …) działają bez nich.
+administratora (`sudo …` / terminal „jako administrator") – skrypty startowe robią to za Ciebie po wybraniu trybu
+pełnego. Informacje o urządzeniach (`list`, `inspect`, `serial`, …) działają bez nich.
 Opcjonalnie: `smartctl` (pakiet *smartmontools*) – pełne dane SMART.
+
+Paczki buduje GitHub Actions (`.github/workflows/build.yml`): testy na Ubuntu/macOS/Windows i Pythonie 3.9 oraz 3.13,
+potem PyInstaller na każdym systemie; przy tagu `v*` powstaje Release. Lokalnie: `python3 tools/build_pyz.py`.
 
 ## Bezpieczeństwo
 
@@ -145,8 +173,9 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 
 ## Stan testów i znane ograniczenia
 
-* **76 testów automatycznych** (`python3 -m unittest discover -s tests -t .`): obrazowanie, wznawianie,
-  uszkodzone sektory, weryfikacja, GPT, zabezpieczenia i potwierdzenia, raporty, konfiguracja, CLI.
+* **86 testów automatycznych** (`python3 -m unittest discover -s tests -t .`): obrazowanie, wznawianie,
+  uszkodzone sektory, weryfikacja, GPT, odczyty wyrównane do sektora (symulacja surowych urządzeń),
+  zabezpieczenia i potwierdzenia, raporty, konfiguracja, CLI. Przechodzą na Pythonie 3.9.6 i 3.12.
 * **macOS – przetestowane na prawdziwym systemie** (dysk wewnętrzny oraz utworzony na czas testu obraz dysku
   `hdiutil`): lista, identyfikacja, skan, integralność, benchmark, obraz + weryfikacja + inspekcja (suma zgodna
   z `shasum`), odmontowanie z potwierdzeniem.
@@ -159,7 +188,11 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 * Test prędkości omija pamięć podręczną systemu „w miarę możliwości" (macOS `F_NOCACHE`, Linux `posix_fadvise`);
   na Windows wynik może być zawyżony. Wynik jest orientacyjny.
 * Nie ma (celowo) operacji zapisu na nośnik: formatowania, przywracania obrazu, czyszczenia.
-* Python 3.9+ – testowane na 3.12.
+* **Pakiety do pobrania:** `.pyz` i binarkę macOS (arm64) zbudowałem i uruchomiłem lokalnie (także z ograniczonym
+  `PATH` i bez Pythona w środowisku); skrypty `Start-macOS.command` / `Start-Linux.sh` sprawdziłem na macOS
+  (łącznie z menu w prawdziwym terminalu). **`Start-Windows.bat`, binarki Windows/Linux/macOS-Intel i workflow GitHub
+  Actions nie były uruchamiane** – składnia PowerShella została zweryfikowana parserem, workflow tylko pod kątem YAML.
+* Python 3.9+ – testowane na 3.9.6 i 3.12.
 
 ## Rozwój
 

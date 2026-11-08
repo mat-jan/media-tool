@@ -11,6 +11,7 @@ from .backends import Backend, BackendError, get_backend
 from .errors import MediaToolError
 from .scanning import parse_size
 from .ui import Console, UserAbort
+from .util import ensure_utf8_streams
 
 EXIT_PROBLEM = 3  # wykryto różnice / błędy (np. weryfikacja nie przeszła)
 
@@ -194,6 +195,7 @@ def exit_code(a: argparse.Namespace, res: Optional[dict]) -> int:
 
 
 def main(argv: Optional[List[str]] = None, console: Optional[Console] = None) -> int:
+    ensure_utf8_streams()
     ap = build_parser()
     a = ap.parse_args(argv)
     if getattr(a, "command", None) == "dry-run":

@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..models import Device, Partition
-from ..util import run, run_json
+from ..util import run, run_json, which
 from .base import Backend, BackendError
 
 SYSTEM_MOUNTS = {"/", "/boot", "/boot/efi", "/usr", "/var", "/home"}
@@ -196,7 +195,7 @@ class LinuxBackend(Backend):
             return ["Nic do odmontowania."]
         for m in sorted(set(targets), key=len, reverse=True):
             part = next((p for p in device.partitions if m in (p.mount_points or [])), None)
-            if shutil.which("udisksctl") and part and part.path:
+            if which("udisksctl") and part and part.path:
                 r = run(["udisksctl", "unmount", "-b", part.path], timeout=60)
             else:
                 r = run(["umount", m], timeout=60)
@@ -206,9 +205,9 @@ class LinuxBackend(Backend):
         return msgs
 
     def power_off(self, device: Device) -> str:
-        if shutil.which("udisksctl"):
+        if which("udisksctl"):
             r = run(["udisksctl", "power-off", "-b", device.path], timeout=60)
-        elif shutil.which("eject"):
+        elif which("eject"):
             r = run(["eject", device.path], timeout=60)
         else:
             raise BackendError("Brak udisksctl/eject – nie można bezpiecznie odłączyć")

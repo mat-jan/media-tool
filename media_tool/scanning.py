@@ -56,6 +56,7 @@ def integrity(path: str, size: int, sector: int = 512, areas: Optional[List[Tupl
     seed = int(time.time()) if seed is None else seed
     custom = areas is not None
     areas = areas or default_areas(size, sector, samples, area_len, seed)
+    areas = [((o // sector) * sector, -(-(l + (o % sector)) // sector) * sector) for o, l in areas]  # do sektorów
     results: List[Dict[str, Any]] = []
     with RawReader(path) as rd:
         for i, (off, ln) in enumerate(areas):
@@ -74,7 +75,7 @@ def integrity(path: str, size: int, sector: int = 512, areas: Optional[List[Tupl
                             "unreadable_bytes": sum(r[1] for r in bad), "unreadable_ranges": bad})
             if progress:
                 progress("integralność", (i + 1) / len(areas), "")
-        table = inspect_table(rd.read_at, size)
+        table = inspect_table(lambda o, n: rd.read_aligned(o, n, sector), size)
     ok = [r for r in results if "error" not in r]
     return {"areas": results, "areas_checked": len(ok), "seed": None if custom else seed, "passes": passes,
             "unstable_areas": sum(1 for r in ok if not r["stable"]),

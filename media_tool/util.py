@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,10 +24,39 @@ class CmdResult:
         return self.found and self.rc == 0
 
 
+# Katalogi z narzędziami systemowymi, których może brakować w PATH (sudo, uruchomienie z GUI/launchera).
+_EXTRA_DIRS = {
+    "darwin": ["/usr/sbin", "/sbin", "/usr/local/sbin", "/usr/local/bin", "/opt/homebrew/bin", "/opt/homebrew/sbin"],
+    "linux": ["/usr/sbin", "/sbin", "/usr/local/sbin", "/usr/local/bin", "/usr/bin", "/bin"],
+}
+
+
+def search_path() -> str:
+    """PATH uzupełniony o standardowe katalogi systemowe (bez duplikatów, z zachowaniem kolejności)."""
+    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    key = "darwin" if sys.platform == "darwin" else "linux" if sys.platform.startswith("linux") else ""
+    parts += [d for d in _EXTRA_DIRS.get(key, []) if d not in parts]
+    return os.pathsep.join(parts)
+
+
+def which(name: str):
+    """shutil.which z rozszerzonym PATH; na Windows dodatkowo znany katalog PowerShella."""
+    found = shutil.which(name, path=search_path())
+    if found or sys.platform != "win32" or name.lower() not in ("powershell", "powershell.exe"):
+        return found
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    cand = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    return cand if os.path.exists(cand) else None
+
+
 def run(cmd: list, timeout: float = 30, binary: bool = False):
     """Uruchamia polecenie bez powłoki. Nigdy nie rzuca wyjątku z powodu polecenia."""
+    exe = which(cmd[0]) if cmd and not os.path.isabs(cmd[0]) else None
+    if exe:
+        cmd = [exe] + list(cmd[1:])
     try:
-        p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                           env={**os.environ, "PATH": search_path()})
     except FileNotFoundError:
         return CmdResult(127, "", f"nie znaleziono: {cmd[0]}", found=False)
     except (OSError, subprocess.SubprocessError) as e:
@@ -77,14 +107,43 @@ def mask(value: Optional[str], keep: int = 2) -> Optional[str]:
     return value[:keep] + "*" * (len(value) - keep * 2) + value[-keep:]
 
 
+def chown_to_invoking_user(path: str) -> None:
+    """Przy uruchomieniu przez sudo pliki mają należeć do zwykłego użytkownika, nie do root-a
+    (inaczej nie dałoby się ich potem usunąć/edytować bez sudo). Poza sudo – nic nie robi."""
+    if sys.platform == "win32" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    uid, gid = os.environ.get("SUDO_UID", ""), os.environ.get("SUDO_GID", "")
+    if uid.isdigit() and gid.isdigit():
+        try:
+            os.chown(path, int(uid), int(gid))
+        except OSError:
+            pass
+
+
+def makedirs_owned(path: str) -> None:
+    """os.makedirs, ale nowo utworzone katalogi też trafiają do użytkownika (patrz wyżej)."""
+    missing = []
+    d = os.path.abspath(path)
+    while d and not os.path.exists(d):
+        missing.append(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    os.makedirs(path, exist_ok=True)
+    for m in missing:
+        chown_to_invoking_user(m)
+
+
 def atomic_write_text(path: str, text: str) -> None:
     d = os.path.dirname(os.path.abspath(path))
-    os.makedirs(d, exist_ok=True)
+    makedirs_owned(d)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".part")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
         os.replace(tmp, path)
+        chown_to_invoking_user(path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -121,3 +180,13 @@ def disable_cache(fd: int) -> bool:
     except OSError:
         pass
     return False
+
+
+def ensure_utf8_streams() -> None:
+    """Konsola Windows bywa w cp1250/cp852 – polskie znaki i symbole ✔ nie mogą wywalać programu."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (getattr(stream, "encoding", "") or "").lower().replace("-", "") != "utf8":
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
