@@ -1,0 +1,103 @@
+name: Build & package
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -v
+
+  # Wersje "bez Pythona": jeden plik wykonywalny na system + skrypt uruchamiający (klik i działa).
+  binaries:
+    name: Binary (${{ matrix.name }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows-x64, exe: media-tool.exe, launcher: Start-Windows.bat }
+          - { os: ubuntu-22.04,   name: linux-x64,   exe: media-tool,     launcher: Start-Linux.sh }
+          - { os: macos-latest,   name: macos-arm64, exe: media-tool,     launcher: Start-macOS.command }
+          - { os: macos-15-intel, name: macos-x64,   exe: media-tool,     launcher: Start-macOS.command, optional: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build single-file executable
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          pyinstaller --onefile --name media-tool --clean --noconfirm --paths . --collect-submodules media_tool tools/entry.py
+      - name: Smoke test (no Python involved)
+        run: |
+          ./dist/${{ matrix.exe }} --version
+          ./dist/${{ matrix.exe }} features
+        shell: bash
+      - name: Package
+        run: python tools/package.py ${{ matrix.name }} dist/${{ matrix.exe }} ${{ matrix.launcher }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-tool-${{ matrix.name }}
+          path: dist/media-tool-${{ matrix.name }}.zip
+          if-no-files-found: error
+
+  # Wersja uniwersalna: jeden plik .pyz + wszystkie skrypty uruchamiające (wymaga tylko Pythona 3.9+).
+  universal:
+    name: Universal (.pyz)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tools/build_pyz.py
+      - run: python dist/media-tool.pyz --version
+      - run: python tools/package.py universal dist/media-tool.pyz Start-Windows.bat Start-macOS.command Start-Linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-tool-universal
+          path: dist/media-tool-universal.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') && needs.universal.result == 'success' && needs.binaries.result == 'success' }}
+    needs: [binaries, universal]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
+          body_path: RELEASE_NOTES.md

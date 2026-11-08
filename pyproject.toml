@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "media-tool"
+version = "1.0.0b1"
+description = "Identyfikacja, diagnostyka, raportowanie i obrazowanie nośników danych (macOS, Linux, Windows)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+media-tool = "media_tool.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["media_tool*"]
