@@ -1,120 +1,47 @@
-# Eksport informacji o karcie SD do CSV / SD Card Info Exporter to CSV
+# Drive Info
 
-Skrypt bash dla macOS, który odczytuje informacje o włożonej karcie SD z czytnika kart i eksportuje je do pliku CSV.
+Narzędzie do sprawdzania nośników (karty SD, pendrive'y, SSD/HDD, NVMe) na macOS i Linuksie: informacje, eksport CSV/JSON, test podróbek, test prędkości, raport HTML/PDF.
+Inspect and test storage devices on macOS and Linux: info, CSV/JSON export, fake-capacity detection, speed test, HTML/PDF report.
 
-A bash script for macOS that reads information about an inserted SD card from the built-in card reader and exports it to a CSV file.
-
----
+Trzy interfejsy / three interfaces: **CLI**, **TUI** (terminal), **GUI** (przeglądarka / browser).
 
 ## Wymagania / Requirements
 
-- macOS (wbudowany czytnik kart SD / built-in SD card reader)
-- Bash (domyślnie dostępny / available by default)
-
----
+- Python 3.8+ — rdzeń i GUI bez zależności / core and GUI have no dependencies
+- macOS: `diskutil`, `system_profiler` · Linux: `lsblk`
+- Opcjonalnie / optional: `smartctl` (status SMART), `textual` (TUI: `pip install textual`), Chrome/Chromium (raport PDF)
 
 ## Użycie / Usage
 
 ```bash
-chmod +x sd_card_export.sh
-./sd_card_export.sh
+./drive_info.py                        # lista urządzeń / list devices
+./drive_info.py export disk4           # CSV; też: --all, -e, -f json, -o plik|-
+./drive_info.py speed disk4            # test prędkości + klasa karty (U1/U3/V30, A1/A2)
+./drive_info.py capacity disk4         # test podróbek: zapis + weryfikacja całej wolnej pojemności
+./drive_info.py report disk4 --speed --capacity -o raport.html   # lub .pdf
+./drive_info.py tui                    # interfejs w terminalu
+./drive_info.py gui                    # interfejs w przeglądarce (localhost)
 ```
 
----
+Nośnik musi być zamontowany; testy używają jego punktu montowania (lub `--mount ŚCIEŻKA`).
 
-## Dane wyjściowe / Output
+## Bezpieczeństwo / Safety
 
-Skrypt tworzy plik CSV z datą i godziną w nazwie, np. `sd_card_info_DATE_TIME.csv`.
+- Testy zapisują tylko zwykłe pliki w ukrytym katalogu `.driveinfo_test` na zamontowanym woluminie i zawsze je usuwają. Nie dotykają surowego urządzenia ani istniejących plików.
+- Odmawiają pracy na woluminie głównym `/`.
+- Test pojemności zapełnia całą wolną przestrzeń — dla dużych kart trwa długo (`--limit-mb` testuje tylko początek).
+- GUI słucha wyłącznie na `127.0.0.1` i wymaga losowego tokena z adresu wypisanego przy starcie.
+- Wyniki prędkości są szacunkowe (przez system plików), nie stanowią certyfikacji.
 
-The script creates a CSV file with a timestamp in the filename, e.g. `sd_card_info_DATE_TIME.csv`.
+## Pola eksportu / Export fields
 
-| Field | Example Value |
-|-------|--------------|
-| Export Date | DATE |
-| Product Name | PN |
-| Manufacturer ID | Sandisk etc. |
-| Serial Number (hex) | SN (hex) |
-| Serial Number (dec) | SN |
-| Revision | NUMBER |
-| Manufacturing Date | DATE |
-| Specification Version | NUMBER |
-| Capacity | XXXX GB |
-| File System | ExFAT |
-| Vendor ID | VENDOR ID |
-| Device ID (PID) | PID |
-| S.M.A.R.T. Status | Verified |
-| BSD Name | disk4 |
-| Mount Point | /Volumes/Untitled |
+`device, name, model, vendor, serial, serial_dec, firmware, size_bytes, size, bus, kind, removable, internal, filesystem, partitions, mount_points, smart, manufacturer_id, mfg_date, vendor_id, product_id`
 
----
+Pola niedostępne zostają puste / unavailable fields stay empty.
 
-## Kod / Code
+## Struktura / Layout
 
-```bash
-#!/bin/bash
-
-# sd_card_export.sh
-# Eksportuje informacje o karcie SD do pliku CSV
-
-OUTPUT="sd_card_info_$(date +%Y%m%d_%H%M%S).csv"
-
-echo "Szukam karty SD..."
-
-RAW=$(system_profiler SPCardReaderDataType 2>/dev/null)
-
-if [ -z "$RAW" ]; then
-  echo "Błąd: brak danych z czytnika kart. Czy karta jest włożona?"
-  exit 1
-fi
-
-# Wyciągnij pola
-PRODUCT_NAME=$(echo "$RAW"    | grep "Product Name:"          | awk -F': ' '{print $2}' | xargs)
-MANUFACTURER_ID=$(echo "$RAW" | grep "Manufacturer ID:"       | awk -F': ' '{print $2}' | xargs)
-SERIAL_NUMBER=$(echo "$RAW"   | grep "Serial Number:"         | awk -F': ' '{print $2}' | xargs)
-SERIAL_DEC=$(printf "%d" "$SERIAL_NUMBER" 2>/dev/null)
-REVISION=$(echo "$RAW"        | grep "Revision:"              | head -1 | awk -F': ' '{print $2}' | xargs)
-MFG_DATE=$(echo "$RAW"        | grep "Manufacturing Date:"    | awk -F': ' '{print $2}' | xargs)
-SPEC_VER=$(echo "$RAW"        | grep "Specification Version:" | sed 's/.*Specification Version: //' | tr -d ',' | xargs)
-CAPACITY=$(echo "$RAW"        | grep "Capacity:"              | head -1 | sed 's/.*Capacity: //' | xargs)
-BSD_NAME=$(echo "$RAW"        | grep "BSD Name:"              | head -1 | awk -F': ' '{print $2}' | xargs)
-FILESYSTEM=$(echo "$RAW"      | grep "File System:"           | awk -F': ' '{print $2}' | xargs)
-VENDOR_ID=$(echo "$RAW"       | grep "Vendor ID:"             | head -1 | awk -F': ' '{print $2}' | xargs)
-DEVICE_ID=$(echo "$RAW"       | grep "Device ID:"             | awk -F': ' '{print $2}' | xargs)
-SMART=$(echo "$RAW"           | grep "S.M.A.R.T. status:"     | awk -F': ' '{print $2}' | xargs)
-MOUNT=$(echo "$RAW"           | grep "Mount Point:"           | awk -F': ' '{print $2}' | xargs)
-EXPORT_DATE=$(date "+%Y-%m-%d %H:%M:%S")
-
-# Funkcja owijająca wartość w cudzysłowy (zabezpiecza przecinki i spacje)
-csv() {
-  echo "\"$1\",\"$2\""
-}
-
-# Zapisz CSV
-{
-  csv "Field" "Value"
-  csv "Export Date"           "$EXPORT_DATE"
-  csv "Product Name"          "$PRODUCT_NAME"
-  csv "Manufacturer ID"       "$MANUFACTURER_ID"
-  csv "Serial Number (hex)"   "$SERIAL_NUMBER"
-  csv "Serial Number (dec)"   "$SERIAL_DEC"
-  csv "Revision"              "$REVISION"
-  csv "Manufacturing Date"    "$MFG_DATE"
-  csv "Specification Version" "$SPEC_VER"
-  csv "Capacity"              "$CAPACITY"
-  csv "File System"           "$FILESYSTEM"
-  csv "Vendor ID"             "$VENDOR_ID"
-  csv "Device ID (PID)"       "$DEVICE_ID"
-  csv "S.M.A.R.T. Status"     "$SMART"
-  csv "BSD Name"              "$BSD_NAME"
-  csv "Mount Point"           "$MOUNT"
-} > "$OUTPUT"
-
-echo "✅ Gotowe! Dane zapisane do: $OUTPUT"
-echo ""
-cat "$OUTPUT"
-```
-
----
+`driveinfo/collect.py` (wykrywanie / discovery) · `tests.py` (testy / tests) · `report.py` · `cli.py` · `tui.py` · `web.py`
 
 ## Licencja / License
 
