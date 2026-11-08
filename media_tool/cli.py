@@ -109,12 +109,35 @@ def build_parser() -> argparse.ArgumentParser:
         q.add_argument("--algo", choices=["md5", "sha1", "sha256", "sha512", "blake2b"])
         if name == "create":
             q.add_argument("--overwrite", action="store_true", help="nadpisz istniejący plik obrazu")
+    q = isub.add_parser("restore", parents=[common], argument_default=argparse.SUPPRESS,
+                        help="PRZYWRÓĆ obraz na nośnik (nadpisuje WSZYSTKIE dane; wymaga potwierdzenia)")
+    q.add_argument("device")
+    q.add_argument("--image", "-i", required=True)
+    q.add_argument("--allow-image-without-metadata", action="store_true",
+                   help="pozwól na zwykły plik .img bez .mtinfo.json (spójność obrazu nie jest wtedy sprawdzana przed zapisem)")
     q = isub.add_parser("verify", parents=[common], argument_default=argparse.SUPPRESS, help="porównaj obraz z nośnikiem")
     q.add_argument("device")
     q.add_argument("--image", required=True)
     q = isub.add_parser("inspect", parents=[common], argument_default=argparse.SUPPRESS, help="zbadaj plik obrazu")
     q.add_argument("image")
     q.add_argument("--hash", action="store_true", help="oblicz i porównaj sumę kontrolną")
+
+    bk = add("backup", "kopia plików z nośnika: run / verify / list")
+    bsub = bk.add_subparsers(dest="backup_command", metavar="AKCJA", required=True)
+    q = bsub.add_parser("run", parents=[common], argument_default=argparse.SUPPRESS,
+                        help="skopiuj pliki z nośnika (przyrostowo, z weryfikacją; nic nie kasuje na nośniku)")
+    q.add_argument("device", nargs="?", help="urządzenie (albo użyj --source)")
+    q.add_argument("--output", "-o", required=True, help="folder docelowy kopii")
+    q.add_argument("--name", help="nazwa zestawu kopii (domyślnie etykieta woluminu)")
+    q.add_argument("--only", help="kategorie: zdjęcia,filmy,audio,dokumenty,inne (domyślnie wszystko)")
+    q.add_argument("--volume", help="który zamontowany wolumin kopiować (gdy jest ich kilka)")
+    q.add_argument("--source", help="skopiuj zwykły folder zamiast urządzenia")
+    q.add_argument("--no-verify", action="store_true", help="nie czytaj kopii ponownie po zapisie (szybciej, mniej bezpiecznie)")
+    q = bsub.add_parser("verify", parents=[common], argument_default=argparse.SUPPRESS,
+                        help="sprawdź, czy kopia jest nienaruszona (sumy SHA-256)")
+    q.add_argument("path")
+    q = bsub.add_parser("list", parents=[common], argument_default=argparse.SUPPRESS, help="lista kopii w folderze")
+    q.add_argument("path")
 
     p = add("dry-run", "uruchom dowolne polecenie w trybie symulacji")
     p.add_argument("rest", nargs=argparse.REMAINDER, metavar="POLECENIE ...")
@@ -168,9 +191,19 @@ def dispatch(ctx: commands.Context, a: argparse.Namespace) -> Optional[dict]:
         ic = a.image_command
         if ic in ("create", "resume"):
             return commands.cmd_image_create(ctx, a.device, a.output, g("overwrite", False), ic == "resume", g("algo"))
+        if ic == "restore":
+            return commands.cmd_image_restore(ctx, a.device, a.image, g("allow_image_without_metadata", False))
         if ic == "verify":
             return commands.cmd_image_verify(ctx, a.device, a.image)
         return commands.cmd_image_inspect(ctx, a.image, g("hash", False))
+    if c == "backup":
+        bc = a.backup_command
+        if bc == "run":
+            return commands.cmd_backup_run(ctx, g("device"), a.output, g("name"), g("only"), not g("no_verify", False),
+                                           g("volume"), g("source"))
+        if bc == "verify":
+            return commands.cmd_backup_verify(ctx, a.path)
+        return commands.cmd_backup_list(ctx, a.path)
     if c == "config":
         return commands.cmd_config(ctx, a.action, g("key"), g("value"))
     if c == "logs":
@@ -190,6 +223,9 @@ def exit_code(a: argparse.Namespace, res: Optional[dict]) -> int:
           (c == "compare" and res.get("identical") is False) or \
           (c == "scan" and res.get("clean") is False) or \
           (c == "integrity" and res.get("passed") is False) or \
+          (c == "image" and a.image_command == "restore" and res.get("verified") is False) or \
+          (c == "backup" and a.backup_command == "run" and not res.get("dry_run") and (res.get("failed") or res.get("scan_errors"))) or \
+          (c == "backup" and a.backup_command == "verify" and res.get("healthy") is False) or \
           (c == "report-diff" and res.get("identical") is False)
     return EXIT_PROBLEM if bad else 0
 

@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import os
 import shutil
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -372,3 +373,110 @@ def compare_images(a: str, b: str, *, algo: str = "sha256", chunk_size: int = 4 
     return {"a": a, "b": b, "size_a": sa, "size_b": sb, "identical": sa == sb and diff_chunks == 0,
             "different_chunks": diff_chunks, "first_difference_offset": first, "algorithm": algo,
             "hash_a": ha.hexdigest(), "hash_b": hb.hexdigest()}
+
+
+# ------------------------------------------------------------------ przywracanie obrazu na nośnik (ZAPIS!)
+def plan_restore(target: str, target_size: int, image: str, *, sector_size: int = 512,
+                 allow_unverified_image: bool = False, avoid_paths: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Sprawdza warunki wstępne przywracania bez czytania ani zapisywania danych nośnika."""
+    problems: List[str] = []
+    warnings: List[str] = []
+    img_size = file_size(image)
+    side = load_sidecar(image) if img_size is not None else None
+    if img_size is None:
+        problems.append(f"Nie znaleziono obrazu: {image}")
+    else:
+        if img_size <= 0:
+            problems.append("Obraz jest pusty")
+        if img_size % sector_size:
+            problems.append(f"Rozmiar obrazu ({img_size} B) nie jest wielokrotnością sektora ({sector_size} B)")
+        if img_size > target_size:
+            problems.append(f"Obraz ({img_size} B) jest większy niż nośnik ({target_size} B)")
+        elif img_size < target_size:
+            warnings.append("Obraz jest mniejszy niż nośnik – reszta nośnika zostanie nietknięta "
+                            "(zapasowy nagłówek GPT może nie leżeć na końcu).")
+        if side is None:
+            if not allow_unverified_image:
+                problems.append("Brak pliku .mtinfo.json – nie można sprawdzić spójności obrazu przed zapisem "
+                                "(dla zwykłych obrazów .img użyj --allow-image-without-metadata)")
+            else:
+                warnings.append("Obraz bez metadanych – jego spójność przed zapisem nie jest sprawdzana.")
+        elif not side.get("progress", {}).get("complete") or not side.get("image", {}).get("hash"):
+            problems.append("Obraz jest niekompletny (przerwane tworzenie) – nie można go przywrócić")
+        elif side.get("bad_ranges"):
+            warnings.append(f"Obraz zawiera zera w {len(side['bad_ranges'])} nieczytelnych zakresach źródła.")
+    bad_loc = _under(image, avoid_paths or [])
+    if bad_loc:
+        problems.append(f"Plik obrazu leży na nośniku docelowym (wolumin {bad_loc}) – zostałby zniszczony")
+    if not os.path.exists(target):
+        problems.append(f"Nie znaleziono urządzenia docelowego: {target}")
+    return {"target": target, "image": image, "image_size": img_size, "target_size": target_size,
+            "metadata": side, "problems": problems, "warnings": warnings, "ok": not problems}
+
+
+def restore_image(target: str, target_size: int, image: str, *, sector_size: int = 512,
+                  chunk_size: int = 4 * 1048576, allow_unverified_image: bool = False,
+                  avoid_paths: Optional[List[str]] = None, progress: Progress = None,
+                  cancel: Callable[[], bool] = lambda: False) -> Dict[str, Any]:
+    """Zapisuje obraz na nośnik, po czym weryfikuje zapis odczytem zwrotnym.
+
+    To JEDNA Z DWÓCH operacji programu zapisujących na nośnik – wywołujący MUSI wcześniej przeprowadzić
+    potwierdzenie (safety.confirm_typed), sprawdzić że to nie dysk systemowy/wewnętrzny i odmontować go."""
+    plan = plan_restore(target, target_size, image, sector_size=sector_size,
+                        allow_unverified_image=allow_unverified_image, avoid_paths=avoid_paths)
+    if not plan["ok"]:
+        raise ImagingError("; ".join(plan["problems"]))
+    img_size = plan["image_size"]
+    side = plan["metadata"]
+    chunk_size = max(sector_size, (chunk_size // sector_size) * sector_size)
+
+    # 1) obraz musi być taki, jaki zapisano przy tworzeniu
+    algo = (side or {}).get("image", {}).get("hash_algorithm", "sha256")
+    if side:
+        if hash_file(image, algo, lambda l, f, e: progress and progress("sprawdzam obraz", f, e), cancel) \
+                != side["image"]["hash"]:
+            raise ImagingError("Suma kontrolna obrazu nie zgadza się z zapisem w .mtinfo.json – obraz jest "
+                               "uszkodzony lub zmieniony; nic nie zostało zapisane na nośnik")
+
+    # 2) zapis
+    t0 = time.perf_counter()
+    written = 0
+    try:
+        with open(image, "rb") as src, open(target, "r+b", buffering=0) as dev:
+            offset = 0
+            while offset < img_size:
+                if cancel():
+                    raise Cancelled("Przerwano w trakcie zapisu – nośnik jest w stanie niespójnym, "
+                                    "powtórz przywracanie lub sformatuj go")
+                n = min(chunk_size, img_size - offset)
+                data = src.read(n)
+                if len(data) != n:
+                    raise ImagingError("Obraz skrócił się w trakcie odczytu")
+                dev.seek(offset)
+                dev.write(data)
+                offset += n
+                written = offset
+                if progress:
+                    progress("zapis", offset / img_size, _speed(offset, t0))
+            _full_sync(dev)
+    except OSError as e:
+        raise ImagingError(f"Błąd zapisu na nośnik po {written} B: {e.strerror or e}. "
+                           f"Nośnik jest w stanie niespójnym – powtórz przywracanie.")
+
+    # 3) weryfikacja zapisu (obowiązkowa)
+    ver = verify_image(target, img_size, image, sector_size=sector_size, chunk_size=chunk_size,
+                       progress=(lambda l, f, e: progress("weryfikacja", f, e)) if progress else None, cancel=cancel)
+    return {"target": target, "image": image, "bytes_written": written, "verified": bool(ver["match"]),
+            "mismatched_chunks": ver["mismatched_chunks"], "first_mismatch_offset": ver["first_mismatch_offset"],
+            "duration_s": round(time.perf_counter() - t0, 2), "warnings": plan["warnings"]}
+
+
+def _full_sync(f) -> None:
+    f.flush()
+    try:
+        os.fsync(f.fileno())
+        if sys.platform == "darwin":
+            import fcntl
+            fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
+    except OSError:
+        pass

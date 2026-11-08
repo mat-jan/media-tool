@@ -57,7 +57,25 @@ revalidate()                   ponowny odczyt; zmiana odcisku → DeviceChanged 
 operacja + audit w logu
 ```
 
-`Risk.DEVICE_WRITE` jest zarezerwowane – żadna komenda go nie używa.
+`Risk.DEVICE_WRITE` używa wyłącznie `image restore` (jedyny zapis na nośnik). Droga: `pre_check(d)` (dysk systemowy /
+nieustalony → odmowa, wewnętrzny → odmowa, tylko-do-odczytu → odmowa, kontrola obrazu przez `plan_restore`) →
+`confirm_typed(word="NADPISZ")` → `revalidate(strict)` → odmontowanie → `revalidate(identity)` → `restore_image`
+(sprawdzenie sumy obrazu przed zapisem, zapis, `fsync`, **obowiązkowa weryfikacja odczytem zwrotnym**).
+
+## Backup plików (`backup.py`)
+
+Czyta pliki z zamontowanego woluminu (nie z surowego urządzenia – bez uprawnień administratora) i zapisuje do
+`<cel>/<nazwa>/`. `index.json` (ścieżka względna → lista wersji `{size, mtime_ns, sha256, dest}`) pozwala pomijać
+niezmienione pliki bez czytania. Dla zmienionego pliku: kopia do `.part` z liczeniem SHA-256 w locie → ta sama suma
+co zapisana wersja = dedup (zmieniła się tylko data) → inaczej zapis pod nazwą pierwotną lub, gdy zajęta,
+`<nazwa>_<sha8>.<rozszerzenie>` (nigdy nadpisanie) → odczyt zwrotny i porównanie sum (`--no-verify` wyłącza).
+Dziennik każdego uruchomienia: `.media-tool-backup/runs/*.json`.
+
+## Interfejs (`ui.py`, `menu.py`)
+
+`ui.py` to jedyne miejsce znające kody ANSI: `paint`/`good`/`problem`, tabele wyrównywane według szerokości
+widocznej, ramki z zawijaniem (ostrzeżeń nie obcinamy), pasek postępu z ETA. Kolory tylko w terminalu
+(`NO_COLOR`, `MEDIA_TOOL_COLOR`, `MEDIA_TOOL_ASCII`); w testach i potokach wynik jest czystym tekstem.
 
 ## Odczyt surowy (`rawio.py`)
 
