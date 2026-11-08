@@ -3,3 +3,6 @@ __pycache__/
 drive_info_*.csv
 drive_info_*.json
 drive_report_*
+media-tool-report-*
+*.mtinfo.json
+*.img
