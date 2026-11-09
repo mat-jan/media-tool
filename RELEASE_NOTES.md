@@ -4,6 +4,13 @@ Narzędzie do identyfikacji, diagnostyki, raportowania, **kopii zapasowych** i o
 (macOS, Linux, Windows). Operacje są domyślnie **tylko do odczytu**; jedyny zapis na nośnik to przywracanie obrazu
 (`image restore`) – za podwójnym potwierdzeniem (`NADPISZ`), tylko na nośnikach zewnętrznych, z weryfikacją zapisu.
 
+### Nowości w 1.0.0-beta.4
+- **Kopia CAŁEJ karty** (obraz 1:1 ze wszystkimi partycjami) w menu *Kopia zapasowa*; wcześniej kopiowane były tylko
+  pliki z jednego zamontowanego woluminu. Kopia plików obejmuje teraz **wszystkie woluminy** karty.
+- **Okna wyboru folderu i pliku** (macOS, Windows, Linux) zamiast wpisywania ścieżek.
+- **Automatyczne ponowne uruchomienie z uprawnieniami administratora** (sudo/UAC) dokładnie w funkcji, która ich potrzebuje.
+- Brakujący folder docelowy jest tworzony (wcześniej tworzenie obrazu kończyło się błędem).
+
 ### Nowości w 1.0.0-beta.3
 - **Backup plików** z karty/dysku: przyrostowy, bez nadpisywania (powtórzone nazwy zdjęć z aparatu trafiają obok
   z przyrostkiem), weryfikowany sumą SHA-256, bez uprawnień administratora; `backup verify` / `backup list`.

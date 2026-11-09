@@ -137,7 +137,7 @@ class MenuBackupFlowTests(IsolatedHome, unittest.TestCase):
         backend = FakeBackend([dev])
         item = 1 + sum(len(items) for _, items in menu.GROUPS[:1])               # pierwsza pozycja grupy KOPIE ZAPASOWE
         con = scripted_console([str(item),
-                                "1", "1",          # Pliki z nośnika -> pierwsze urządzenie
+                                "2", "1",          # tryb: same pliki -> pierwsze urządzenie
                                 dst, "1", "t",     # folder, wszystkie, weryfikacja
                                 "t",               # potwierdzenie operacji na nośniku
                                 "n",               # nie wysuwaj

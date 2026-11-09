@@ -541,29 +541,19 @@ def _choose_volume(ctx: Context, d: Device, volume: Optional[str]) -> str:
     raise MediaToolError("Urządzenie ma kilka woluminów – wskaż jeden przez --volume: " + ", ".join(mounts))
 
 
-def cmd_backup_run(ctx: Context, spec: Optional[str], dest: str, name: Optional[str] = None,
-                   only: Optional[str] = None, verify: bool = True, volume: Optional[str] = None,
-                   source_path: Optional[str] = None) -> Dict:
-    cats = parse_categories(only)
-    if source_path:
-        source, meta, label = source_path, {"source_path": source_path}, os.path.basename(os.path.abspath(source_path))
-        refuse_same = False
-    else:
-        if not spec:
-            raise MediaToolError("Podaj urządzenie albo --source FOLDER")
-        d = ctx.pick(spec, Risk.FILE_WRITE, f"backup plików → {dest}")
-        source = _choose_volume(ctx, d, volume)
-        part = next((p for p in d.partitions if source in (p.mount_points or [])), None)
-        label = (part.volume_label if part and part.volume_label else None) or d.volume_label or \
-                f"{d.model or 'nosnik'}-{(d.serial or d.card_serial or d.reader_serial or '')[:8]}".rstrip("-")
-        meta = {**d.stable_identity(), "volume": source, "volume_label": label, "device_path": d.path}
-        refuse_same = True
-    name = backup_mod.sanitize_name(name or label)
-    logs.audit("backup", source=source, dest=dest, name=name, dry_run=ctx.dry_run, only=sorted(cats) if cats else None)
-    res = backup_mod.run_backup(source, dest, name, only=cats, verify=verify, dry_run=ctx.dry_run,
-                                refuse_same_volume=refuse_same, source_meta=meta, progress=ctx.progress)
-    mb = lambda n: human_size(n)
-    head = "[SYMULACJA] backup – nic nie zostało skopiowane" if ctx.dry_run else "Backup zakończony"
+def _volume_label(d: Device, mount: str, single: bool = True) -> str:
+    """Etykieta woluminu; bez niej: etykieta urządzenia, potem model-numer (gdy wolumin jest jeden), potem nazwa folderu."""
+    part = next((p for p in d.partitions if mount in (p.mount_points or [])), None)
+    if part and part.volume_label:
+        return part.volume_label
+    if single:
+        return d.volume_label or f"{d.model or 'nosnik'}-{(d.serial or d.card_serial or d.reader_serial or '')[:8]}".rstrip("-")
+    return os.path.basename(mount.rstrip("/\\")) or "wolumin"
+
+
+def _backup_result_lines(ctx: Context, res: Dict[str, Any], verify: bool, heading: Optional[str] = None) -> List[str]:
+    mb = human_size
+    head = heading or ("[SYMULACJA] backup – nic nie zostało skopiowane" if ctx.dry_run else "Backup zakończony")
     lines = [ui.heading(head),
              f"  Źródło        : {res['source']}", f"  Cel           : {res['target']}",
              f"  Przejrzano    : {res['scanned_files']} plików ({mb(res['scanned_bytes'])}), kategorie: {_v(res['categories'])}",
@@ -582,12 +572,61 @@ def cmd_backup_run(ctx: Context, spec: Optional[str], dest: str, name: Optional[
         lines.append(ui.problem(f"… i {len(res['failed']) - 15} kolejnych błędów (pełna lista w pliku uruchomienia)"))
     for e in res["scan_errors"][:5]:
         lines.append(ui.problem(f"nie można odczytać: {e}"))
+    return lines
+
+
+def cmd_backup_run(ctx: Context, spec: Optional[str], dest: str, name: Optional[str] = None,
+                   only: Optional[str] = None, verify: bool = True, volume: Optional[str] = None,
+                   source_path: Optional[str] = None) -> Dict:
+    """Kopia PLIKÓW. `volume="all"` kopiuje wszystkie zamontowane woluminy urządzenia (każdy jako osobny zestaw)."""
+    cats = parse_categories(only)
+    jobs: List[tuple] = []          # (źródło, nazwa zestawu, meta)
+    if source_path:
+        label = os.path.basename(os.path.abspath(source_path))
+        jobs.append((source_path, name or label, {"source_path": source_path}))
+        refuse_same = False
+    else:
+        if not spec:
+            raise MediaToolError("Podaj urządzenie albo --source FOLDER")
+        d = ctx.pick(spec, Risk.FILE_WRITE, f"backup plików → {dest}")
+        refuse_same = True
+        if volume == "all":
+            mounts = [m for m in dict.fromkeys(d.mount_points or []) if m]
+            if not mounts:
+                raise MediaToolError(f"{d.path} nie ma zamontowanego woluminu – zamontuj nośnik")
+        else:
+            mounts = [_choose_volume(ctx, d, volume)]
+        # przy kilku woluminach zestawy dostają przedrostek urządzenia (model-numer), nie sklejone etykiety
+        base = name or f"{d.model or 'nosnik'}-{(d.serial or d.card_serial or d.reader_serial or '')[:8]}".rstrip("-")
+        for m in mounts:
+            label = _volume_label(d, m, single=len(mounts) == 1)
+            set_name = (name or label) if len(mounts) == 1 else f"{base}-{label}"
+            jobs.append((m, set_name, {**d.stable_identity(), "volume": m, "volume_label": label, "device_path": d.path}))
+
+    results = []
+    for source, set_name, meta in jobs:
+        set_name = backup_mod.sanitize_name(set_name)
+        logs.audit("backup", source=source, dest=dest, name=set_name, dry_run=ctx.dry_run, only=sorted(cats) if cats else None)
+        if len(jobs) > 1:
+            ctx.console.info(ui.heading(f"Wolumin {source} → zestaw '{set_name}'"))
+        results.append(backup_mod.run_backup(source, dest, set_name, only=cats, verify=verify, dry_run=ctx.dry_run,
+                                             refuse_same_volume=refuse_same, source_meta=meta, progress=ctx.progress))
+    lines: List[str] = []
+    for res in results:
+        lines += _backup_result_lines(ctx, res, verify) + [""]
+    failed = [f for r in results for f in r["failed"]]
+    scan_errors = [e for r in results for e in r["scan_errors"]]
     if not ctx.dry_run:
-        bad = res["failed"] or res["scan_errors"]
         lines.append(ui.problem("Backup zakończony z błędami – uruchom ponownie, aby spróbować skopiować brakujące pliki")
-                     if bad else ui.good(f"Wszystko skopiowane i zweryfikowane{'' if verify else ' (bez weryfikacji odczytem)'}. "
-                                         f"Źródło nie zostało zmienione."))
-    return ctx.out(res, lines)
+                     if (failed or scan_errors) else
+                     ui.good(f"Wszystko skopiowane i zweryfikowane{'' if verify else ' (bez weryfikacji odczytem)'}. "
+                             f"Źródło nie zostało zmienione."))
+    if len(results) == 1:
+        return ctx.out(results[0], lines)
+    agg = {"sets": results, "failed": failed, "scan_errors": scan_errors, "dry_run": ctx.dry_run,
+           "copied": sum(r["copied"] for r in results), "copied_bytes": sum(r["copied_bytes"] for r in results),
+           "skipped_unchanged": sum(r["skipped_unchanged"] for r in results)}
+    return ctx.out(agg, lines)
 
 
 def cmd_backup_verify(ctx: Context, path: str) -> Dict:

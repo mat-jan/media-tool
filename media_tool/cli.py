@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--output", "-o", required=True, help="folder docelowy kopii")
     q.add_argument("--name", help="nazwa zestawu kopii (domyślnie etykieta woluminu)")
     q.add_argument("--only", help="kategorie: zdjęcia,filmy,audio,dokumenty,inne (domyślnie wszystko)")
-    q.add_argument("--volume", help="który zamontowany wolumin kopiować (gdy jest ich kilka)")
+    q.add_argument("--volume", help="który zamontowany wolumin kopiować; `all` = wszystkie woluminy urządzenia")
     q.add_argument("--source", help="skopiuj zwykły folder zamiast urządzenia")
     q.add_argument("--no-verify", action="store_true", help="nie czytaj kopii ponownie po zapisie (szybciej, mniej bezpiecznie)")
     q = bsub.add_parser("verify", parents=[common], argument_default=argparse.SUPPRESS,
