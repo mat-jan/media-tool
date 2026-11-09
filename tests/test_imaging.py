@@ -197,7 +197,11 @@ class ImagingTests(IsolatedHome, unittest.TestCase):
         self.assertTrue(plan["ok"])
         self.assertFalse(os.path.exists(self.out))
         plan = imaging.plan_create(self.src, self.size, os.path.join(self.tmp, "no-dir", "x.img"))
-        self.assertFalse(plan["ok"])
+        self.assertTrue(plan["ok"])                      # brakujący katalog zostanie utworzony
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "no-dir")))     # ...ale dopiero przy prawdziwym zapisie
+        st = imaging.create_image(self.src, self.size, os.path.join(self.tmp, "no-dir", "sub", "x.img"),
+                                  chunk_size=CHUNK)
+        self.assertTrue(st["progress"]["complete"])
 
     def test_inspect_image_without_and_with_metadata(self):
         self.create()

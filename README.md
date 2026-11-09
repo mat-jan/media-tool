@@ -170,7 +170,15 @@ obrazy różne, skan/integralność z błędami, raporty różne); `130` – prz
 
 Przy każdej pozycji widać, czy jest dostępna na tym systemie: `✔` dostępne, `◐` częściowo, `✖` niedostępne
 (z powodem). Wybór urządzenia pokazuje karty z nazwą, rozmiarem, typem, numerem seryjnym i plakietkami
-(`SYSTEM`, `wymienny`, `zamontowany`). Interfejs używa kolorów tylko w prawdziwym terminalu; `NO_COLOR=1` je wyłącza,
+(`SYSTEM`, `wymienny`, `zamontowany`).
+
+**Wybór folderów i plików bez wpisywania:** przy każdej ścieżce (folder kopii, plik obrazu, miejsce raportu…) menu
+otwiera **systemowe okno wyboru** – macOS: okno Findera, Windows: standardowe okno, Linux: `zenity` lub `kdialog`.
+Można też wybrać folder domyślny albo wpisać ścieżkę. Anulowanie okna przerywa operację (nic nie jest zapisywane
+w domyślnym miejscu bez Twojej wiedzy). Okna są wyłączone w sesji SSH i bez ekranu (wtedy pytanie o ścieżkę), a także
+przez `MEDIA_TOOL_NO_GUI=1`.
+
+Interfejs używa kolorów tylko w prawdziwym terminalu; `NO_COLOR=1` je wyłącza,
 `MEDIA_TOOL_ASCII=1` zamienia ramki i symbole na zwykłe znaki.
 
 ## Co program pokazuje
@@ -186,7 +194,18 @@ oraz data i godzina odczytu.
 Rozróżniane są: numer seryjny urządzenia ≠ kontrolera ≠ czytnika ≠ karty; UUID systemu plików ≠ PARTUUID ≠
 nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 
-## Backup plików
+## Backup plików i całej karty
+
+Są dwa różne rodzaje kopii – wybierasz w menu pozycję **Kopia zapasowa** albo odpowiednie polecenie:
+
+| Chcesz… | Co robi | Polecenie | Administrator? |
+|---|---|---|---|
+| **Całą kartę / cały nośnik** | obraz 1:1: wszystkie partycje, tablica partycji, miejsce poza woluminami; można go potem przywrócić na kartę | `image create DEVICE -o karta.img` | tak (odczyt surowego urządzenia) |
+| **Same pliki** (zdjęcia, filmy…) | pliki ze **wszystkich** zamontowanych woluminów karty; przyrostowo, tylko nowe | `backup run DEVICE -o FOLDER --volume all` | nie |
+
+W menu program po wybraniu „całej karty” sam proponuje ponowne uruchomienie z uprawnieniami administratora
+(`sudo` – zapyta o hasło w tym samym terminalu; Windows: okno UAC) i wraca dokładnie do tej funkcji, odmontowanie
+karty przed kopią (obraz jest wtedy spójny) oraz weryfikację obrazu względem karty i bezpieczne wysunięcie po kopii.
 
 `media-tool backup run DEVICE -o FOLDER` kopiuje **pliki** z zamontowanego woluminu karty/dysku do wskazanego folderu
 (zdjęcia, filmy, dokumenty…). Nie wymaga uprawnień administratora.
@@ -201,6 +220,7 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
   (`--no-verify` to wyłącza).
 * **Filtry:** `--only zdjęcia,filmy` (też `photos,videos`); pomijane są pliki systemowe (`.Spotlight-V100`, `.Trashes`,
   `System Volume Information`, `.DS_Store`…).
+* Przy kilku woluminach (`--volume all`, w menu domyślnie) każdy wolumin to osobny zestaw: `<model>-<numer>-<etykieta>`.
 * Układ: `FOLDER/<etykieta karty>/…pliki…` oraz `.media-tool-backup/` z indeksem i dziennikiem każdego uruchomienia.
 * `backup verify FOLDER/<zestaw>` sprawdza po czasie, czy kopia jest nienaruszona; `backup list FOLDER` pokazuje
   zestawy i uruchomienia. `backup run --source FOLDER -o …` kopiuje zwykły folder.
@@ -239,7 +259,7 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 
 ## Stan testów i znane ograniczenia
 
-* **138 testów automatycznych** (`python3 -m unittest discover -s tests -t .`): obrazowanie, wznawianie,
+* **166 testów automatycznych** (`python3 -m unittest discover -s tests -t .`): obrazowanie, wznawianie,
   uszkodzone sektory, weryfikacja, GPT, odczyty wyrównane do sektora (symulacja surowych urządzeń), backup
   (przyrostowość, kolizje nazw, błędy odczytu, przerwanie), przywracanie (głównie przypadki odmowy), zabezpieczenia
   i potwierdzenia, raporty, konfiguracja, CLI, interfejs. Zabezpieczenia sprawdzono też mutacyjnie (celowe psucie
@@ -247,7 +267,10 @@ nazwa urządzenia ≠ etykieta woluminu ≠ identyfikator sprzętowy.
 * **macOS – przetestowane na prawdziwym systemie** (dysk wewnętrzny oraz obrazy dysków `hdiutil` jako „karty"):
   lista, identyfikacja, skan, integralność, benchmark, obraz + weryfikacja + inspekcja (suma zgodna z `shasum`),
   odmontowanie z potwierdzeniem, **backup prawdziwej karty (przyrostowy, kolizje nazw) oraz prawdziwe przywracanie
-  obrazu na drugi nośnik** – suma surowego urządzenia po zapisie identyczna z obrazem (`shasum`).
+  obrazu na drugi nośnik** – suma surowego urządzenia po zapisie identyczna z obrazem (`shasum`); **obraz całej
+  karty z dwiema partycjami** (tablica GPT i obie partycje w obrazie, suma zgodna z `shasum`) oraz kopia plików
+  z obu woluminów; systemowe okno wyboru folderu otwiera się (AppleScript) – wybór myszką sprawdziłem tylko do
+  momentu otwarcia okna, nie klikałem w nim.
 * **Linux i Windows – tylko na danych przykładowych** (parsery `lsblk`/PowerShell na przygotowanych danych).
   Backendy są napisane, ale **nie uruchamiałem ich na tych systemach ani na prawdziwej karcie SD**.
   Szczególnie do sprawdzenia: odczyt VID/PID i numeru seryjnego na Windows, Shell *Eject*, odczyt surowy

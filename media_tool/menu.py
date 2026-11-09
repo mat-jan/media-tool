@@ -1,17 +1,19 @@
 """Interaktywne menu: grupy tematyczne, kolory, karty urządzeń przy wyborze."""
 from __future__ import annotations
 
+import datetime
 import os
+import shutil
 from typing import Callable, List, Optional, Tuple
 
-from . import __version__, backup as backup_mod, capabilities, commands, config, logs, ui
+from . import __version__, admin, backup as backup_mod, capabilities, commands, config, logs, picker, ui
 from .backends import BackendError
 from .capabilities import NO, PARTIAL
 from .commands import Context
 from .errors import MediaToolError
 from .scanning import parse_size
 from .ui import UserAbort
-from .util import human_size
+from .util import human_size, is_admin
 
 
 # ------------------------------------------------------------------ wybór urządzenia
@@ -51,6 +53,78 @@ def _ask_path(ctx: Context, prompt: str, default: str = "") -> str:
     return os.path.expanduser(p)
 
 
+def ask_folder(ctx: Context, prompt: str, default: str = "") -> str:
+    """Wybór folderu: okno systemowe (gdy dostępne), domyślny albo wpisanie ręcznie."""
+    con = ctx.console
+    default = os.path.expanduser(default) if default else ""
+    if picker.gui_available():
+        options = ["Wybierz folder w oknie  (zalecane)"]
+        if default:
+            options.append(f"Użyj domyślnego: {default}")
+        options.append("Wpisz ścieżkę ręcznie")
+        choice = con.choose(prompt, options, default=0)
+        if choice == 0:
+            con.info(ui.dim("Otwieram okno wyboru folderu..."))
+            try:
+                picked = picker.pick_folder(prompt, default or os.path.expanduser("~"))
+            except picker.PickerUnavailable as e:
+                con.warn(f"Okno wyboru niedostępne ({e}) – wpisz ścieżkę.")
+            else:
+                if picked is None:
+                    raise UserAbort()               # anulowano okno = rezygnacja z operacji
+                con.info(f"Wybrano: {picked}")
+                return picked
+        elif default and choice == 1:
+            return default
+        return _ask_path(ctx, "Folder", default)
+    return _ask_path(ctx, prompt, default)
+
+
+def ask_file(ctx: Context, prompt: str, start: str = "") -> str:
+    """Wybór istniejącego pliku: okno systemowe albo wpisanie ścieżki."""
+    con = ctx.console
+    if picker.gui_available():
+        choice = con.choose(prompt, ["Wybierz plik w oknie  (zalecane)", "Wpisz ścieżkę ręcznie"], default=0)
+        if choice == 0:
+            con.info(ui.dim("Otwieram okno wyboru pliku..."))
+            try:
+                picked = picker.pick_file(prompt, start or os.path.expanduser("~"))
+            except picker.PickerUnavailable as e:
+                con.warn(f"Okno wyboru niedostępne ({e}) – wpisz ścieżkę.")
+            else:
+                if picked is None:
+                    raise UserAbort()
+                con.info(f"Wybrano: {picked}")
+                return picked
+    return _ask_path(ctx, prompt)
+
+
+def ask_output_file(ctx: Context, prompt: str, default_name: str, default_dir: str = "") -> str:
+    """Wybór miejsca zapisu pliku: folder (okno) + nazwa pliku (domyślna proponowana)."""
+    folder = ask_folder(ctx, f"{prompt} – folder", default_dir or os.path.expanduser("~"))
+    name = ctx.console.ask("Nazwa pliku", default_name)
+    return os.path.join(folder, name or default_name)
+
+
+def _ensure_admin(ctx: Context, why: str) -> bool:
+    """True = można kontynuować (już administrator). Inaczej proponuje ponowne uruchomienie z sudo/UAC."""
+    if is_admin():
+        return True
+    con = ctx.console
+    if not admin.can_elevate():
+        con.error("Ta funkcja wymaga uprawnień administratora, a sudo/UAC jest niedostępne – uruchom program jako administrator.")
+        return False
+    con.box("Potrzebne uprawnienia administratora",
+            [why, "Program uruchomi się ponownie z uprawnieniami (zapyta o hasło) i wróci od razu do tej funkcji."],
+            kind="warn", stream="out")
+    if con.confirm("Uruchomić ponownie z uprawnieniami administratora?", True):
+        try:
+            admin.relaunch_as_admin(start_item=getattr(ctx, "current_item", None))
+        except OSError as e:
+            con.error(str(e))
+    return False
+
+
 def _dev(fn: Callable) -> Callable:
     return lambda ctx: fn(ctx, choose_device(ctx))
 
@@ -77,21 +151,67 @@ def _backup_dir(ctx) -> str:
     return os.path.expanduser(ctx.cfg["backup_dir"])
 
 
+def _card_image_name(d) -> str:
+    labels = sorted({p.volume_label for p in d.partitions if p.volume_label})
+    who = backup_mod.sanitize_name(labels[0] if len(labels) == 1 else (d.model or d.name or "nosnik"))
+    sn = backup_mod.sanitize_name((d.serial or d.card_serial or d.reader_serial or "")[:12], fallback="")
+    return f"{who}{'-' + sn if sn else ''}-{datetime.datetime.now():%Y%m%d-%H%M%S}.img"
+
+
+def _backup_card(ctx, spec: str):
+    """Kopia CAŁEJ karty/nośnika: obraz 1:1 (wszystkie partycje, tablica partycji, nieprzydzielone miejsce)."""
+    con = ctx.console
+    dev = next((x for x in ctx.devices(include_virtual=True) if x.path == spec), None)
+    if not _ensure_admin(ctx, "Kopia całej karty czyta surowe urządzenie (wszystkie partycje), co wymaga uprawnień administratora."):
+        return None
+    size = dev.size_detected_bytes if dev else None
+    dest_dir = ask_folder(ctx, "Gdzie zapisać obraz całej karty (folder docelowy)", _backup_dir(ctx))
+    output = os.path.join(dest_dir, con.ask("Nazwa pliku obrazu", _card_image_name(dev) if dev else "karta.img"))
+    if size:
+        probe = dest_dir
+        while probe and not os.path.exists(probe):
+            probe = os.path.dirname(probe)
+        free = shutil.disk_usage(probe or ".").free
+        con.info(f"Rozmiar karty: {human_size(size)}   wolne miejsce w celu: {human_size(free)}")
+        if free < size + 64 * 1048576:
+            raise MediaToolError(f"Za mało miejsca w folderze docelowym: potrzeba {human_size(size)}, wolne {human_size(free)}")
+    if dev and dev.mounted and not dev.read_only and con.confirm(
+            "Karta jest zamontowana. Odmontować ją przed kopią (zalecane – obraz będzie spójny)?", True):
+        commands.cmd_unmount(ctx, spec)
+    res = commands.cmd_image_create(ctx, spec, output)
+    if not ctx.dry_run and res and con.confirm("Zweryfikować obraz względem karty (czyta kartę drugi raz, trwa tyle samo)?", True):
+        con.assume_yes, was = True, con.assume_yes          # to samo urządzenie, zgoda na odczyt już udzielona
+        try:
+            commands.cmd_image_verify(ctx, spec, output)
+        finally:
+            con.assume_yes = was
+    if not ctx.dry_run and res and con.confirm("Gotowe. Bezpiecznie wysunąć kartę teraz?", False):
+        commands.cmd_eject(ctx, spec)
+    return res
+
+
 def _backup_run(ctx):
     con = ctx.console
-    mode = con.choose("Co skopiować?", ["Pliki z nośnika (karta SD, pendrive, dysk)", "Zwykły folder z komputera"], default=0)
-    spec = source = None
+    mode = con.choose("Co chcesz zabezpieczyć?", [
+        "CAŁĄ KARTĘ / cały nośnik – obraz 1:1 (wszystkie partycje; można przywrócić na kartę)  [administrator]",
+        "Same pliki (zdjęcia, filmy, dokumenty) – ze WSZYSTKICH woluminów karty",
+        "Zwykły folder z komputera"], default=0)
     if mode == 0:
-        spec = choose_device(ctx, "Z którego nośnika zrobić kopię?")
+        spec = choose_device(ctx, "Którą kartę / który nośnik skopiować w całości?")
+        return _backup_card(ctx, spec)
+    spec = source = None
+    if mode == 1:
+        spec = choose_device(ctx, "Z którego nośnika skopiować pliki?")
     else:
-        source = _ask_path(ctx, "Folder źródłowy")
-    dest = _ask_path(ctx, "Gdzie zapisać kopię (folder docelowy)", _backup_dir(ctx))
+        source = ask_folder(ctx, "Folder źródłowy", os.path.expanduser("~"))
+    dest = ask_folder(ctx, "Gdzie zapisać kopię (folder docelowy)", _backup_dir(ctx))
     kinds = con.choose("Które pliki kopiować?", ["Wszystkie", "Tylko zdjęcia i filmy", "Własny wybór kategorii"], default=0)
     only = {0: None, 1: "zdjęcia,filmy"}.get(kinds)
     if kinds == 2:
         only = con.ask(f"Kategorie oddzielone przecinkami ({', '.join(sorted(set(backup_mod.CATEGORIES) | {'inne'}))})")
     verify = con.confirm("Sprawdzić każdą kopię odczytem zwrotnym (bezpieczniej, trochę wolniej)?", True)
-    res = commands.cmd_backup_run(ctx, spec, dest, only=only, verify=verify, source_path=source)
+    res = commands.cmd_backup_run(ctx, spec, dest, only=only, verify=verify, source_path=source,
+                                  volume="all" if spec else None)
     if spec and not ctx.dry_run and not (res["failed"] or res["scan_errors"]):
         if con.confirm("Kopia gotowa. Bezpiecznie wysunąć nośnik teraz?", False):
             commands.cmd_eject(ctx, spec)
@@ -99,7 +219,7 @@ def _backup_run(ctx):
 
 
 def _backup_verify(ctx):
-    root = _ask_path(ctx, "Folder z kopiami", _backup_dir(ctx))
+    root = ask_folder(ctx, "Folder z kopiami", _backup_dir(ctx))
     info = backup_mod.list_backups(root)
     if info["kind"] == "root":
         if not info["sets"]:
@@ -110,23 +230,31 @@ def _backup_verify(ctx):
 
 
 def _backup_list(ctx):
-    return commands.cmd_backup_list(ctx, _ask_path(ctx, "Folder z kopiami", _backup_dir(ctx)))
+    return commands.cmd_backup_list(ctx, ask_folder(ctx, "Folder z kopiami", _backup_dir(ctx)))
 
 
 def _image(ctx):
     sub = ctx.console.choose("Obraz nośnika:", ["Utwórz obraz", "Wznów przerwane tworzenie", "Zbadaj plik obrazu"])
     if sub == 2:
-        return commands.cmd_image_inspect(ctx, _ask_path(ctx, "Plik obrazu"),
+        return commands.cmd_image_inspect(ctx, ask_file(ctx, "Plik obrazu do zbadania"),
                                           ctx.console.confirm("Obliczyć też sumę kontrolną?", False))
+    if not _ensure_admin(ctx, "Obraz nośnika czyta surowe urządzenie, co wymaga uprawnień administratora."):
+        return None
     spec = choose_device(ctx)
-    out = _ask_path(ctx, "Plik wyjściowy obrazu (np. ~/backup.img)")
-    over = sub == 0 and os.path.exists(out) and ctx.console.confirm(f"{out} istnieje – nadpisać?", False)
-    return commands.cmd_image_create(ctx, spec, out, overwrite=over, resume=sub == 1)
+    dev = next((x for x in ctx.devices(include_virtual=True) if x.path == spec), None)
+    if sub == 1:
+        out = ask_file(ctx, "Plik obrazu do wznowienia")
+        return commands.cmd_image_create(ctx, spec, out, resume=True)
+    out = ask_output_file(ctx, "Gdzie zapisać obraz", _card_image_name(dev) if dev else "obraz.img", _backup_dir(ctx))
+    over = os.path.exists(out) and ctx.console.confirm(f"{out} istnieje – nadpisać?", False)
+    return commands.cmd_image_create(ctx, spec, out, overwrite=over)
 
 
 def _verify(ctx):
+    if not _ensure_admin(ctx, "Porównanie obrazu z nośnikiem czyta surowe urządzenie, co wymaga uprawnień administratora."):
+        return None
     spec = choose_device(ctx)
-    return commands.cmd_image_verify(ctx, spec, _ask_path(ctx, "Plik obrazu do porównania"))
+    return commands.cmd_image_verify(ctx, spec, ask_file(ctx, "Plik obrazu do porównania"))
 
 
 def _restore(ctx):
@@ -134,31 +262,34 @@ def _restore(ctx):
                     ["Zapisuje obraz na wybrany nośnik i NADPISUJE wszystkie jego dane.",
                      "Dozwolone tylko na nośnikach zewnętrznych/wymiennych (nie na dysku systemowym).",
                      "Przed zapisem trzeba będzie wpisać ścieżkę, numer seryjny i słowo NADPISZ."], kind="bad", stream="out")
-    image = _ask_path(ctx, "Plik obrazu do przywrócenia")
+    if not _ensure_admin(ctx, "Zapis na surowe urządzenie wymaga uprawnień administratora."):
+        return None
+    image = ask_file(ctx, "Plik obrazu do przywrócenia")
     spec = choose_device(ctx, "Na który nośnik zapisać obraz?")
     return commands.cmd_image_restore(ctx, spec, image)
 
 
 def _hash(ctx):
-    return commands.cmd_hash(ctx, _ask_path(ctx, "Plik / obraz"), ctx.console.ask("Algorytm", ctx.cfg["hash_algorithm"]))
+    return commands.cmd_hash(ctx, ask_file(ctx, "Plik / obraz"), ctx.console.ask("Algorytm", ctx.cfg["hash_algorithm"]))
 
 
 def _compare(ctx):
-    return commands.cmd_compare(ctx, _ask_path(ctx, "Obraz 1"), _ask_path(ctx, "Obraz 2"))
+    return commands.cmd_compare(ctx, ask_file(ctx, "Obraz 1"), ask_file(ctx, "Obraz 2"))
 
 
 def _report(fmt: str):
     def run(ctx):
         scope = ctx.console.choose("Zakres raportu:", ["Wszystkie nośniki", "Jedno urządzenie"], default=0)
         spec = choose_device(ctx) if scope == 1 else None
-        out = ctx.console.ask("Plik raportu", commands.default_report_path(ctx, fmt))
+        default = commands.default_report_path(ctx, fmt)
+        out = ask_output_file(ctx, "Gdzie zapisać raport", os.path.basename(default), os.path.dirname(os.path.abspath(default)))
         redact = ctx.console.confirm("Zamaskować numery seryjne (do udostępniania)?", ctx.cfg["redact_serials"])
-        return commands.cmd_report(ctx, fmt, os.path.expanduser(out), spec, redact=redact)
+        return commands.cmd_report(ctx, fmt, out, spec, redact=redact)
     return run
 
 
 def _report_diff(ctx):
-    return commands.cmd_report_diff(ctx, _ask_path(ctx, "Starszy raport JSON"), _ask_path(ctx, "Nowszy raport JSON"))
+    return commands.cmd_report_diff(ctx, ask_file(ctx, "Starszy raport JSON"), ask_file(ctx, "Nowszy raport JSON"))
 
 
 def _logs(ctx):
@@ -253,14 +384,21 @@ def render_menu(ctx: Context, feats) -> None:
     con.line(f"\n  {ui.cyan(f'{len(ITEMS) + 1:>2}')}     Wyjście")
 
 
+RAW_KEYS = {"benchmark", "integrity", "scan", "errors"}     # inne funkcje pytają o administratora same
+
+
 def run(ctx: Context) -> int:
     con = ctx.console
     feats = capabilities.features()
     logs.audit("menu_start")
+    pending = os.environ.pop(admin.START_ITEM_ENV, "")            # po restarcie z sudo: od razu wróć do wybranej funkcji
     while True:
-        render_menu(ctx, feats)
         try:
-            raw = con.ask("Wybór")
+            if pending.isdigit():
+                raw, pending = pending, ""
+            else:
+                render_menu(ctx, feats)
+                raw = con.ask("Wybór")
         except UserAbort:
             return 0
         if not raw.isdigit() or not 1 <= int(raw) <= len(ITEMS) + 1:
@@ -277,7 +415,11 @@ def run(ctx: Context) -> int:
         if f and f.status == PARTIAL and f.reason:
             con.warn(f"Funkcja częściowo dostępna: {f.reason}")
         con.line(f"\n{ui.heading('▸ ' + title if not ui._ascii_mode() else '> ' + title)}")
+        ctx.current_item = n
         try:
+            if key in RAW_KEYS and not is_admin() and admin.can_elevate():
+                _ensure_admin(ctx, "Pełny odczyt surowego urządzenia wymaga uprawnień administratora "
+                                   "(bez nich działa tylko ograniczony tryb albo funkcja się nie uruchomi).")
             handler(ctx)
         except (UserAbort, KeyboardInterrupt):
             con.error("Przerwano – wracam do menu.")

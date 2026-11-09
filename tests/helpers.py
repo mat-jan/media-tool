@@ -122,7 +122,9 @@ class IsolatedHome:
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = self._tmp.name
         self._old = os.environ.get("MEDIA_TOOL_HOME")
+        self._old_gui = os.environ.get("MEDIA_TOOL_NO_GUI")
         os.environ["MEDIA_TOOL_HOME"] = os.path.join(self.tmp, "home")
+        os.environ["MEDIA_TOOL_NO_GUI"] = "1"           # testy nie otwierają okien systemowych
         logs.reset_for_tests()
 
     def tearDown(self):
@@ -131,4 +133,8 @@ class IsolatedHome:
             os.environ.pop("MEDIA_TOOL_HOME", None)
         else:
             os.environ["MEDIA_TOOL_HOME"] = self._old
+        if self._old_gui is None:
+            os.environ.pop("MEDIA_TOOL_NO_GUI", None)
+        else:
+            os.environ["MEDIA_TOOL_NO_GUI"] = self._old_gui
         self._tmp.cleanup()

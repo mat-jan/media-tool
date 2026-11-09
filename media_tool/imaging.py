@@ -17,7 +17,7 @@ from . import __version__
 from .errors import Cancelled, ImagingError
 from .partition_tables import inspect_table
 from .rawio import RawReader, add_range, can_read, file_size, overlaps
-from .util import atomic_write_json, chown_to_invoking_user
+from .util import atomic_write_json, chown_to_invoking_user, makedirs_owned
 
 SIDECAR_SUFFIX = ".mtinfo.json"
 STATE_EVERY = 64 * 1024 * 1024
@@ -94,11 +94,18 @@ def plan_create(source: str, size: int, output: str, *, resume: bool = False, ov
     bad_loc = _under(output, avoid_paths or [])
     if bad_loc:
         problems.append(f"Plik obrazu nie może leżeć na obrazowanym nośniku (wolumin {bad_loc})")
-    if not os.path.isdir(out_dir):
-        problems.append(f"Katalog docelowy nie istnieje: {out_dir}")
+    # katalog docelowy może jeszcze nie istnieć (zostanie utworzony) – sprawdzamy najbliższy istniejący
+    probe = out_dir
+    while probe and not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    if not probe or not os.path.isdir(probe) or not os.access(probe, os.W_OK):
+        problems.append(f"Nie można zapisać w katalogu docelowym: {out_dir}")
         free = None
     else:
-        free = shutil.disk_usage(out_dir).free
+        free = shutil.disk_usage(probe).free
         need = size - done
         if free < need + 16 * 1048576:
             problems.append(f"Za mało miejsca: potrzeba {need} B, wolne {free} B")
@@ -122,6 +129,7 @@ def create_image(source: str, size: int, output: str, *, sector_size: int = 512,
         raise ImagingError("Nieznany lub zerowy rozmiar nośnika")
     chunk_size = max(sector_size, (chunk_size // sector_size) * sector_size)
 
+    makedirs_owned(os.path.dirname(os.path.abspath(output)))
     h = hashlib.new(algo)
     bad: List[list] = []
     start = 0
